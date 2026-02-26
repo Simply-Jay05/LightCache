@@ -214,6 +214,7 @@ router.get("/", async (req, res) => {
     }
 
     // Sort Logic
+    let sort = {};
     if (sortBy) {
       switch (sortBy) {
         case "priceAsc":
