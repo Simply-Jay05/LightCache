@@ -62,7 +62,7 @@ router.post("/", async (req, res) => {
     } else {
       // Create a new cart for the guest or user
       const newCart = await Cart.create({
-        userId: userId ? userId : undefined,
+        user: userId ? userId : undefined,
         guestId: guestId ? guestId : "guest_" + new Date().getTime(),
         products: [
           {
@@ -82,6 +82,45 @@ router.post("/", async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).send({ message: "Server Error" });
+  }
+});
+
+// @route PUT /api/cart
+// @desc Update product quantity in the cart for a guest or logged-in user
+// @access Public
+router.put("/", async (req, res) => {
+  const { productId, quantity, size, color, guestId, userId } = req.body;
+
+  try {
+    const cart = await getCart(userId, guestId);
+    if (!cart) return res.status(404).json({ message: "Cart not found" });
+
+    const productIndex = cart.product.findIndex(
+      (p) =>
+        p.productId.toString() === productId &&
+        p.size === size &&
+        p.color === color,
+    );
+
+    if (productIndex > -1) {
+      // update Quantity
+      if (quantity > 0) {
+        cart.products[productIndex].quantity = quantity;
+      } else {
+        cart.products.splice(productIndex, 1); // remove product if qnatity is 0
+      }
+      cart.totalPrice = cart.products.reduce(
+        (acc, item) => acc + item.price * item.quantity,
+        0,
+      );
+      await cart.save();
+      return res.status(200).json(cart);
+    } else {
+      return res.status(404).json({ message: "Product not found in cart" });
+    }
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: "Server Error" });
   }
 });
 
