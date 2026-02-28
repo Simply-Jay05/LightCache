@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 
-const checkoutItemSchema = new mongoose.Schema(
+const orderItemSchema = new mongoose.Schema(
   {
     productId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -29,14 +29,14 @@ const checkoutItemSchema = new mongoose.Schema(
   { _id: false },
 );
 
-const checkoutSchema = new mongoose.Schema(
+const orderSchema = new mongooose.Schema(
   {
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
     },
-    checkoutItem: [checkoutItemSchema],
+    orderItems: [orderItemSchema],
     shippingAddress: {
       address: { type: String, required: true },
       city: { type: String, required: true },
@@ -58,22 +58,24 @@ const checkoutSchema = new mongoose.Schema(
     paidAt: {
       type: Date,
     },
+    isDelivered: {
+      type: Boolean,
+      default: false,
+    },
+    deliveredAt: {
+      type: Date,
+    },
     paymentStatus: {
       type: String,
       default: "pending",
     },
-    paymentDetails: {
-      type: mongoose.Schema.Types.Mixed, // stroe payment-related details (transaction ID, paypal response)
-    },
-    isFinalized: {
-      type: Boolean,
-      default: false,
-    },
-    finalizedAt: {
-      type: Date,
+    status: {
+      type: String,
+      enum: ["Processing", "Shipped", "Delivered", "Cancelled"],
+      default: "Processing",
     },
   },
   { timestamps: true },
 );
 
-module.exports = mongoose.model("Checkout", checkoutSchema);
+module.exports = mongoose.model("Order", orderSchema);
