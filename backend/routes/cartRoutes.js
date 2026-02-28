@@ -95,7 +95,7 @@ router.put("/", async (req, res) => {
     const cart = await getCart(userId, guestId);
     if (!cart) return res.status(404).json({ message: "Cart not found" });
 
-    const productIndex = cart.product.findIndex(
+    const productIndex = cart.products.findIndex(
       (p) =>
         p.productId.toString() === productId &&
         p.size === size &&
@@ -143,7 +143,7 @@ router.delete("/", async (req, res) => {
     cart.products.splice(productIndex, 1);
 
      cart.totalPrice = cart.products.reduce(
-      (acc, item) => acc + itemPice * item.quantity,
+      (acc, item) => acc + item.price * item.quantity,
     0);
     await cart.save();
     res.status(200).json(cart);
@@ -164,7 +164,7 @@ router.get("/", async (req, res) => {
   const {userId, guestId,} = req.body;
 
   try {
-    const cart = getCart(userId, guestId);
+    const cart = await getCart(userId, guestId);
     if (cart) {
       res.status(200).json(cart);
     } else {
