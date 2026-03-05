@@ -116,7 +116,7 @@ const productSlice = createSlice({
         })
         .addCase(fetchProductByFilters.rejected, (state, action) => {
             state.loading = false,
-            state.error = action.error.message;
+            state.error = action.error?.message;
         })
         // Handle fetching single product details
         .addCase(fetchProductDetails.pending, (state) => {
@@ -129,7 +129,7 @@ const productSlice = createSlice({
         })
         .addCase(fetchProductDetails.rejected, (state, action) => {
             state.loading = false,
-            state.error = action.error.message;
+            state.error = action.error?.message;
         })
         // Handle Updating product
         .addCase(updateProduct.pending, (state) => {
@@ -146,7 +146,7 @@ const productSlice = createSlice({
         })
         .addCase(updateProduct.rejected, (state, action) => {
             state.loading = false,
-            state.error = action.error.message;
+            state.error = action.error?.message;
         })
         // Handle similar Product
         .addCase(fetchSimilarProducts.pending, (state) => {
@@ -159,7 +159,7 @@ const productSlice = createSlice({
         })
         .addCase(fetchSimilarProducts.rejected, (state, action) => {
             state.loading = false,
-            state.error = action.error.message;
+            state.error = action.error?.message;
         })
     }
 });
