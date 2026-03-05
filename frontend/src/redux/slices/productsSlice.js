@@ -172,7 +172,8 @@ const productSlice = createSlice({
         state.similarProducts = action.payload;
       })
       .addCase(fetchSimilarProducts.rejected, (state, action) => {
-        ((state.loading = false), (state.error = action.error?.message));
+        state.loading = false;
+        state.error = action.error.message;
       });
   },
 });
