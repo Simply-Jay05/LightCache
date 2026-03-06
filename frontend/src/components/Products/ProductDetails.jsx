@@ -144,7 +144,7 @@ const ProductDetails = ({ productId }) => {
                       onClick={() => setSelectedColor(color)}
                       className={`w-8 h-8 rounded-full border ${selectedColor === color ? "border-4 border-black" : "border-gray-300"}`}
                       style={{
-                        backgroundColor: color.toLocaleLowerCase(),
+                        backgroundColor: color.toLocaleLowerCase() || color.split(" ").toLocaleLowerCase(),
                         filter: "brightness(0.5)",
                       }}
                     ></button>
