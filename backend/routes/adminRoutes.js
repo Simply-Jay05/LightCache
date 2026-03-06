@@ -17,17 +17,16 @@ router.get("/", protect, admin, async (req, res) => {
   }
 });
 
-
 // @route POST /api/admin/users
 // @desc Add a new user (admin only)
 // @access Private/Admin
 router.post("/", protect, admin, async (req, res) => {
-  const {name, email, password, role} = req.body;
+  const { name, email, password, role } = req.body;
 
   try {
-    let user = await User.findOne({email});
+    let user = await User.findOne({ email });
     if (user) {
-      return res.status(400).json({message: "User already exists"});
+      return res.status(400).json({ message: "User already exists" });
     }
 
     user = new User({
@@ -38,13 +37,12 @@ router.post("/", protect, admin, async (req, res) => {
     });
 
     await user.save();
-    res.status(201).json({message: "User created successfully", user});
+    res.status(201).json({ message: "User created successfully", user });
   } catch (error) {
     console.error(error);
     res.status(500).json("Server Error");
   }
 });
-
 
 // @route PUT /api/admin/users/:id
 // @desc Update user info (admin only)
@@ -54,19 +52,18 @@ router.put("/:id", protect, admin, async (req, res) => {
     const user = await User.findById(req.params.id);
 
     if (user) {
-      user.name = req.body.name;
-      user.email = req.body.email;
+      user.name = req.body.name || user.name;
+      user.email = req.body.email || user.email;
       user.role = req.body.role;
     }
-    
-    const updatedUser =  await user.save();
-    res.json({message: "User updated succesfully", updatedUser});
+
+    const updatedUser = await user.save();
+    res.json({ updatedUser });
   } catch (error) {
     console.error(error);
-    res.status(500).json({message: "Server Error"});
+    res.status(500).json({ message: "Server Error" });
   }
 });
-
 
 // @route /api/admin/users/:id
 // @desc Delete a user
@@ -77,13 +74,13 @@ router.delete("/:id", protect, admin, async (req, res) => {
 
     if (user) {
       await user.deleteOne();
-      res.json({message: "User deleted Successfully"});
+      res.json({ message: "User deleted Successfully" });
     } else {
-      res.status(404).json({message: "User not found"});
+      res.status(404).json({ message: "User not found" });
     }
   } catch (error) {
     console.error(error);
-    res.status(500).json({message: "Server Error"});
+    res.status(500).json({ message: "Server Error" });
   }
 });
 module.exports = router;

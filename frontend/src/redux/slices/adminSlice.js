@@ -30,7 +30,7 @@ export const addUser = createAsyncThunk(
       );
       return response.data;
     } catch (error) {
-      return rejectedWithValue(error.response.data);
+      return rejectWithValue(error.response.data);
     }
   },
 );
@@ -39,16 +39,20 @@ export const addUser = createAsyncThunk(
 export const updateUser = createAsyncThunk(
   "admin/updateUser",
   async ({ id, name, email, role }) => {
-    const response = await axios.put(
-      `${import.meta.env.VITE_BACKEND_URL}/api/admin/users/${id}`,
-      { name, email, role },
-      {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem("userToken")}`,
+    try {
+      const response = await axios.put(
+        `${import.meta.env.VITE_BACKEND_URL}/api/admin/users/${id}`,
+        { name, email, role },
+        {
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem("userToken")}`,
+          },
         },
-      },
-    );
-    return response.data;
+      );
+      return response.data;
+    } catch (error) {
+      console.error(error);
+    }
   },
 );
 
@@ -84,7 +88,7 @@ const adminSlice = createSlice({
       })
       .addCase(fetchUsers.rejected, (state, action) => {
         state.loading = false;
-        state.error = action.error.message;
+        state.error = action.error?.message;
       })
       .addCase(updateUser.fulfilled, (state, action) => {
         const updatedUser = action.payload;
@@ -92,7 +96,7 @@ const adminSlice = createSlice({
           (user) => user._id === updatedUser._id,
         );
         if (userIndex !== -1) {
-          state.users[userIndex] = updateUser;
+          state.users[userIndex] = updatedUser;
         }
       })
       .addCase(deleteUser.fulfilled, (state, action) => {
@@ -108,7 +112,7 @@ const adminSlice = createSlice({
       })
       .addCase(addUser.rejected, (state, action) => {
         state.loading = false;
-        state.error = action.payload.message;
+        state.error = action.payload?.message;
       });
   },
 });

@@ -1,7 +1,12 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { useNavigate } from "react-router-dom";
-import { addUser, deleteUser, updateUser } from "../../redux/slices/adminSlice";
+import {
+  addUser,
+  deleteUser,
+  updateUser,
+  fetchUsers,
+} from "../../redux/slices/adminSlice";
 
 const UserManagement = () => {
   const dispatch = useDispatch();
@@ -15,6 +20,13 @@ const UserManagement = () => {
       navigate("/");
     }
   }, [user, navigate]);
+
+  // Fetch all users
+  useEffect(() => {
+    if (user && user.role === "admin") {
+      dispatch(fetchUsers());
+    }
+  }, [dispatch, user, navigate]);
 
   const [formData, setFormData] = useState({
     name: "",
