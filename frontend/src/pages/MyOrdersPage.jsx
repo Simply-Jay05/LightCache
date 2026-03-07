@@ -16,8 +16,38 @@ const MyOrdersPage = () => {
     navigate(`/order/${orderId}`);
   };
 
-  if (loading) return <p>Loading...</p>;
-  if (error) return <p>Error: {error}</p>;
+  if (loading) {
+    return (
+      <div className="max-w-7xl mx-auto p-4">
+        <h2 className="text-xl sm:text-2xl font-bold mb-6">My Orders</h2>
+        <div className="space-y-4 animate-pulse">
+          {[...Array(5)].map((_, i) => (
+            <div key={i} className="flex gap-4 p-4 border rounded-lg">
+              <div className="w-12 h-12 bg-gray-200 rounded-lg" />
+              <div className="flex-1 space-y-2">
+                <div className="h-4 bg-gray-200 rounded w-1/3" />
+                <div className="h-4 bg-gray-200 rounded w-1/4" />
+              </div>
+              <div className="h-4 bg-gray-200 rounded w-16" />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="text-center py-16">
+        <p className="text-red-500 mb-4">Failed to load product details.</p>
+        <button
+          onClick={() => window.location.reload()}
+          className="bg-black text-white px-6 py-2 rounded hover:bg-gray-800"
+        >
+          Try Again
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-7xl mx-auto p-4 m:p6">
