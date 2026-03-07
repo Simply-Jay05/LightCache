@@ -73,10 +73,46 @@ const ProductDetails = ({ productId }) => {
   };
 
   if (loading) {
-    return <p>Loading</p>;
+    return (
+      <div className="p-6 max-w-6xl mx-auto">
+        <div className="flex flex-col md:flex-row gap-8 animate-pulse">
+          {/* Image skeleton */}
+          <div className="md:w-1/2 bg-gray-200 rounded-lg h-[500px]" />
+          {/* Info skeleton */}
+          <div className="md:w-1/2 space-y-4 pt-4">
+            <div className="h-8 bg-gray-200 rounded w-3/4" />
+            <div className="h-6 bg-gray-200 rounded w-1/4" />
+            <div className="h-4 bg-gray-200 rounded w-full" />
+            <div className="h-4 bg-gray-200 rounded w-5/6" />
+            <div className="h-4 bg-gray-200 rounded w-4/6" />
+            <div className="flex gap-2 mt-4">
+              {[...Array(4)].map((_, i) => (
+                <div key={i} className="w-8 h-8 rounded-full bg-gray-200" />
+              ))}
+            </div>
+            <div className="flex gap-2 mt-2">
+              {[...Array(4)].map((_, i) => (
+                <div key={i} className="w-16 h-10 rounded bg-gray-200" />
+              ))}
+            </div>
+            <div className="h-12 bg-gray-200 rounded w-full mt-4" />
+          </div>
+        </div>
+      </div>
+    );
   }
   if (error) {
-    return <p>Error: {error}</p>;
+    return (
+      <div className="text-center py-16">
+        <p className="text-red-500 mb-4">Failed to load product details.</p>
+        <button
+          onClick={() => window.location.reload()}
+          className="bg-black text-white px-6 py-2 rounded hover:bg-gray-800"
+        >
+          Try Again
+        </button>
+      </div>
+    );
   }
 
   return (
@@ -144,7 +180,9 @@ const ProductDetails = ({ productId }) => {
                       onClick={() => setSelectedColor(color)}
                       className={`w-8 h-8 rounded-full border ${selectedColor === color ? "border-4 border-black" : "border-gray-300"}`}
                       style={{
-                        backgroundColor: color.toLocaleLowerCase() || color.split(" ").toLocaleLowerCase(),
+                        backgroundColor:
+                          color.toLocaleLowerCase() ||
+                          color.split(" ").toLocaleLowerCase(),
                         filter: "brightness(0.5)",
                       }}
                     ></button>
