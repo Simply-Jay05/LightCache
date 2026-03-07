@@ -40,9 +40,10 @@ const Checkout = () => {
           totalPrice: cart.totalPrice,
         }),
       );
-    }
-    if (res.payload && res.payload._id) {
-      setCheckoutId(res.payload._id); // Set checkout ID if checkout was successful
+
+      if (res.payload && res.payload._id) {
+        setCheckoutId(res.payload._id); // Set checkout ID if checkout was successful
+      }
     }
   };
 
@@ -57,6 +58,11 @@ const Checkout = () => {
           },
         },
       );
+      if (respose.status === 200) {
+        await handleFinalizeCheckout(checkoutId); // Finalize checkout if payment is successful
+      } else {
+        console.error(error);
+      }
     } catch (error) {}
     navigate("/order-confirmation");
   };
