@@ -13,9 +13,9 @@ const FeaturesSection = () => {
           <div className="p-4 rounded-full mb-4">
             <HiShoppingBag className="text-xl" />
           </div>
-          <h4 className="tracking-tighter mb-2">FREE INTERNATIONAL SHIPPING</h4>
+          <h4 className="tracking-tighter mb-2">FREE SHIPPING</h4>
           <p className="text-gray-600 text-sm tracking-tighter">
-            On all orders over $100.00
+            Fast delivery to your door, on us
           </p>
         </div>
 
@@ -24,9 +24,9 @@ const FeaturesSection = () => {
           <div className="p-4 rounded-full mb-4">
             <HiArrowPathRoundedSquare className="text-xl" />
           </div>
-          <h4 className="tracking-tighter mb-2">45 DAYS RETURN</h4>
+          <h4 className="tracking-tighter mb-2">30 DAYS FREE RETURNS</h4>
           <p className="text-gray-600 text-sm tracking-tighter">
-            Money back guarantee
+            Not happy? Send it back, no questions asked
           </p>
         </div>
 
@@ -37,7 +37,7 @@ const FeaturesSection = () => {
           </div>
           <h4 className="tracking-tighter mb-2">SECURE CHECKOUT</h4>
           <p className="text-gray-600 text-sm tracking-tighter">
-            100% secured checkout process
+            Your payment is always safe with us
           </p>
         </div>
       </div>
