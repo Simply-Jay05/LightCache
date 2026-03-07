@@ -11,7 +11,7 @@ const Login = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, guestId } = useSelector((state) => state.auth);
+  const { user, guestId, loading, error } = useSelector((state) => state.auth);
   const { cart } = useSelector((state) => state.cart);
 
   // Get redirect parameter and check if it's checkout or something else
@@ -43,9 +43,11 @@ const Login = () => {
           className="w-full max-w-md bg-white p-8 rounded-lg border shadow-sm"
         >
           <div className="flex justify-center mb-6">
-            <h2 className="text-2xl font-bold text-red-500">LightCache</h2>
+            <h2 className="text-xl font-medium">Rabbit</h2>
           </div>
-          <h2 className="text-2xl font-bold text-center mb-6">Welcome</h2>
+          <h2 className="text-2xl font-bold text-center mb-6">
+            Hey there! &#x1F44B;
+          </h2>
           <p className="text-center mb-6">
             Enter your username and password to Login
           </p>
@@ -73,7 +75,7 @@ const Login = () => {
             type="submit"
             className="w-full bg-black text-white p-2 rounded-lg font-semibold hover:bg-gray-800 transition"
           >
-            Sign In
+            {loading ? "Loading..." : "Sign In"}
           </button>
           <p className="mt-6 text-center text-sm">
             Don't have an account?{" "}

@@ -242,7 +242,7 @@ router.get("/", async (req, res) => {
   }
 });
 
-// @route GET /api/products/bet-seller
+// @route GET /api/products/best-seller
 // @desc Retrieve the product with highest rating
 // @acess Public
 router.get("/best-seller", async (req, res) => {
