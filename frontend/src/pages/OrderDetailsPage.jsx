@@ -12,8 +12,56 @@ const OrderDetailsPage = () => {
     dispatch(fetchOrderDetails(id));
   }, [dispatch, id]);
 
-  if (loading) return <p>Loading....</p>;
-  if (error) return <p>Error: {error}</p>;
+  if (loading) {
+    return (
+      <div className="max-w-7xl mx-auto p-4 sm:p-6 animate-pulse">
+        <div className="h-8 bg-gray-200 rounded w-1/3 mb-6" />
+        <div className="p-4 border rounded-lg space-y-6">
+          <div className="flex justify-between">
+            <div className="space-y-2">
+              <div className="h-5 bg-gray-200 rounded w-48" />
+              <div className="h-4 bg-gray-200 rounded w-32" />
+            </div>
+            <div className="space-y-2">
+              <div className="h-6 bg-gray-200 rounded w-20" />
+              <div className="h-6 bg-gray-200 rounded w-24" />
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+            {[...Array(3)].map((_, i) => (
+              <div key={i} className="space-y-2">
+                <div className="h-5 bg-gray-200 rounded w-1/2" />
+                <div className="h-4 bg-gray-200 rounded w-3/4" />
+                <div className="h-4 bg-gray-200 rounded w-2/3" />
+              </div>
+            ))}
+          </div>
+          {[...Array(3)].map((_, i) => (
+            <div key={i} className="flex gap-4 py-3 border-b">
+              <div className="w-12 h-12 bg-gray-200 rounded-lg" />
+              <div className="flex-1 space-y-2">
+                <div className="h-4 bg-gray-200 rounded w-1/2" />
+                <div className="h-4 bg-gray-200 rounded w-1/4" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="max-w-7xl mx-auto p-4 text-center py-16">
+        <p className="text-red-500 mb-4">Failed to load order details.</p>
+        <button
+          onClick={() => dispatch(fetchOrderDetails(id))}
+          className="bg-black text-white px-6 py-2 rounded hover:bg-gray-800"
+        >
+          Try Again
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-7xl mx-auto p-4 sm:p-6">

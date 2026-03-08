@@ -24,10 +24,10 @@ export const fetchUserOrders = createAsyncThunk(
 // Async thunk to fetch orders by ID
 export const fetchOrderDetails = createAsyncThunk(
   "orders/fetchOrderDetails",
-  async (fetchOrderDetails, { rejectWithValue }) => {
+  async (orderId, { rejectWithValue }) => {
     try {
       const response = await axios.get(
-        `${import.meta.env.VITE_BACKEND_URL}/api/order/${orderId}`,
+        `${import.meta.env.VITE_BACKEND_URL}/api/orders/${orderId}`,
         {
           headers: {
             Authorization: `Bearer ${localStorage.getItem("userToken")}`,
@@ -57,6 +57,7 @@ const orderSlice = createSlice({
       .addCase(fetchUserOrders.pending, (state) => {
         state.loading = true;
         state.error = null;
+        state.orderDetails = null;
       })
       .addCase(fetchUserOrders.fulfilled, (state, action) => {
         state.loading = false;
