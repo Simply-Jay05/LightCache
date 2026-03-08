@@ -30,7 +30,9 @@ const EditProductPage = () => {
     images: [],
   });
 
-  const [uploading, setUploading] = useState(false); // Image uploading state
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState(null);
+  const [submitError, setSubmitError] = useState(null);
 
   useEffect(() => {
     if (id) {
@@ -53,36 +55,64 @@ const EditProductPage = () => {
     const file = e.target.files[0];
     const formData = new FormData();
     formData.append("image", file);
-
     try {
       setUploading(true);
+      setUploadError(null);
       const { data } = await axios.post(
         `${import.meta.env.VITE_BACKEND_URL}/api/upload`,
         formData,
-        {
-          headers: { "Content-Type": "multipart/form-data" },
-        },
+        { headers: { "Content-Type": "multipart/form-data" } },
       );
-      setProductData((prevData) => ({
-        ...prevData,
-        images: [...prevData.images, { url: data.imageURL, altText: "" }],
+      setProductData((prev) => ({
+        ...prev,
+        images: [...prev.images, { url: data.imageURL, altText: "" }],
       }));
-      setUploading(false);
     } catch (error) {
-      console.error(error);
+      setUploadError("Image upload failed. Please try again.");
+    } finally {
       setUploading(false);
     }
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    dispatch(updateProduct({ id, productData })).unwrap();
-    dispatch(fetchProductDetails(id));
-    navigate("/admin/products");
+    try {
+      setSubmitError(null);
+      await dispatch(updateProduct({ id, productData })).unwrap();
+      navigate("/admin/products");
+    } catch (err) {
+      setSubmitError("Failed to update product. Please try again.");
+    }
   };
 
-  if (loading) return <p>Loading...</p>;
-  if (error) return <p>Error: {error}</p>;
+  if (loading) {
+    return (
+      <div className="max-w-5xl mx-auto p-6 animate-pulse space-y-6">
+        <div className="h-8 bg-gray-200 rounded w-1/3" />
+        {[...Array(6)].map((_, i) => (
+          <div key={i} className="space-y-2">
+            <div className="h-4 bg-gray-200 rounded w-1/4" />
+            <div className="h-10 bg-gray-200 rounded w-full" />
+          </div>
+        ))}
+        <div className="h-12 bg-gray-200 rounded w-full" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="max-w-5xl mx-auto p-6 text-center py-16">
+        <p className="text-red-500 mb-4">Failed to load product details.</p>
+        <button
+          onClick={() => dispatch(fetchProductDetails(id))}
+          className="bg-black text-white px-6 py-2 rounded hover:bg-gray-800"
+        >
+          Try Again
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-5xl mx-auto p-6 shadow-md rounded-md">
@@ -192,7 +222,13 @@ const EditProductPage = () => {
         <div className="mb-6">
           <label className="block font-semibold mb-2">Upload Image</label>
           <input type="file" onChange={handleImageUpload} />
-          {uploading && <p>Uploading Image...</p>}
+
+          {uploading && (
+            <p className="text-sm text-gray-500 mt-1">Uploading image...</p>
+          )}
+          {uploadError && (
+            <p className="text-sm text-red-500 mt-1">{uploadError}</p>
+          )}
           <div className="flex gap-4 mt-4">
             {productData.images.map((image, index) => (
               <div key={index}>
@@ -206,6 +242,9 @@ const EditProductPage = () => {
           </div>
         </div>
 
+        {submitError && (
+          <p className="text-red-500 text-sm mb-3">{submitError}</p>
+        )}
         <button
           type="submit"
           className="w-full bg-green-500 text-white py-2 rounded-md hover:bg-green-600 transition-colors"

@@ -66,6 +66,34 @@ const UserManagement = () => {
     }
   };
 
+  // Loading & Error Handler
+  if (loading) {
+    return (
+      <div className="max-w-7xl mx-auto p-6 animate-pulse">
+        <div className="h-8 bg-gray-200 rounded w-1/4 mb-6" />
+        <div className="space-y-3">
+          {[...Array(5)].map((_, i) => (
+            <div key={i} className="h-12 bg-gray-200 rounded" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="max-w-7xl mx-auto p-6 text-center py-16">
+        <p className="text-red-500 mb-4">Failed to load users.</p>
+        <button
+          onClick={() => dispatch(fetchUsers())}
+          className="bg-black text-white px-6 py-2 rounded hover:bg-gray-800"
+        >
+          Try Again
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-7xl mx-auto p-6">
       <h2 className="text-2xl font-bold mb-5">User Management</h2>
@@ -129,54 +157,46 @@ const UserManagement = () => {
       </div>
 
       {/* User List Management */}
-      {loading ? (
-        <p>Loading...</p>
-      ) : error ? (
-        <p>Error: {error}</p>
-      ) : (
-        <div className="overflow-x-auto shadow-md sm:rounded-lg">
-          <table className="min-w-full text-left text-gray-500">
-            <thead className="bg-gray-100 text-sm uppercase text-gray-700">
-              <tr>
-                <th className="py-3 px-4">Name</th>
-                <th className="py-3 px-4">Email</th>
-                <th className="py-3 px-4">Role</th>
-                <th className="py-3 px-4">Actions</th>
+      <div className="overflow-x-auto shadow-md sm:rounded-lg">
+        <table className="min-w-full text-left text-gray-500">
+          <thead className="bg-gray-100 text-sm uppercase text-gray-700">
+            <tr>
+              <th className="py-3 px-4">Name</th>
+              <th className="py-3 px-4">Email</th>
+              <th className="py-3 px-4">Role</th>
+              <th className="py-3 px-4">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((user) => (
+              <tr key={user._id} className="border-b hover:bg-gray-50">
+                <td className="p-4 font-medium text-gray-900 whitespace-nowrap">
+                  {user.name}
+                </td>
+                <td className="p-4">{user.email}</td>
+                <td className="p-4">
+                  <select
+                    value={user.role}
+                    onChange={(e) => handleRoleChange(user._id, e.target.value)}
+                    className="p-2 border rounded"
+                  >
+                    <option value="customer">Customer</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </td>
+                <td className="p-4">
+                  <button
+                    onClick={() => handleDeleteUser(user._id)}
+                    className="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600"
+                  >
+                    Delete
+                  </button>
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {users.map((user) => (
-                <tr key={user._id} className="border-b hover:bg-gray-50">
-                  <td className="p-4 font-medium text-gray-900 whitespace-nowrap">
-                    {user.name}
-                  </td>
-                  <td className="p-4">{user.email}</td>
-                  <td className="p-4">
-                    <select
-                      value={user.role}
-                      onChange={(e) =>
-                        handleRoleChange(user._id, e.target.value)
-                      }
-                      className="p-2 border rounded"
-                    >
-                      <option value="customer">Customer</option>
-                      <option value="admin">Admin</option>
-                    </select>
-                  </td>
-                  <td className="p-4">
-                    <button
-                      onClick={() => handleDeleteUser(user._id)}
-                      className="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600"
-                    >
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 };

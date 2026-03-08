@@ -28,11 +28,31 @@ const AdminHomePage = () => {
     <div className="max-w-7xl mx-auto p-6">
       <h1 className="text-3xl font-bold mb-6">Admin Dashboard</h1>
       {productsLoading || ordersLoading ? (
-        <p>Loading...</p>
-      ) : productsError ? (
-        <p className="text-red-500">Error fetching products: {productsError}</p>
-      ) : ordersError ? (
-        <p className="text-red-500">Error fetching orders: {ordersError}</p>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-pulse">
+          {[...Array(3)].map((_, i) => (
+            <div key={i} className="p-4 shadow-md rounded-lg space-y-3">
+              <div className="h-5 bg-gray-200 rounded w-1/2" />
+              <div className="h-8 bg-gray-200 rounded w-1/3" />
+            </div>
+          ))}
+        </div>
+      ) : productsError || ordersError ? (
+        <div className="text-center py-12">
+          <p className="text-red-500 mb-4">
+            {productsError
+              ? "Failed to load products."
+              : "Failed to load orders."}
+          </p>
+          <button
+            onClick={() => {
+              dispatch(fetchAdminProducts());
+              dispatch(fetchAllOrders());
+            }}
+            className="bg-black text-white px-6 py-2 rounded hover:bg-gray-800"
+          >
+            Try Again
+          </button>
+        </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           <div className="p-4 shadow-md rounded-lg">

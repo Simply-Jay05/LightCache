@@ -26,8 +26,32 @@ const OrderManagement = () => {
     dispatch(fetchAllOrders());
   };
 
-  if (loading) return <p>Loading...</p>;
-  if (error) return <p>Error: {error}</p>;
+  if (loading) {
+    return (
+      <div className="max-w-7xl mx-auto p-6 animate-pulse">
+        <div className="h-8 bg-gray-200 rounded w-1/4 mb-6" />
+        <div className="space-y-3">
+          {[...Array(6)].map((_, i) => (
+            <div key={i} className="h-12 bg-gray-200 rounded" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="max-w-7xl mx-auto p-6 text-center py-16">
+        <p className="text-red-500 mb-4">Failed to load orders.</p>
+        <button
+          onClick={() => dispatch(fetchAllOrders())}
+          className="bg-black text-white px-6 py-2 rounded hover:bg-gray-800"
+        >
+          Try Again
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-7xl mx-auto p-6">
