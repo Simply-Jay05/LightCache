@@ -78,7 +78,7 @@ const EditProductPage = () => {
     e.preventDefault();
     try {
       setSubmitError(null);
-      await dispatch(updateProduct({ id, productData })).unwrap();
+      await dispatch(updateProduct({ id, productData }));
       navigate("/admin/products");
     } catch (err) {
       setSubmitError("Failed to update product. Please try again.");
