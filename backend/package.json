@@ -4,9 +4,12 @@
   "description": "",
   "main": "server.js",
   "scripts": {
-    "start": "node backend/server.js",
+    "start": "node backend/server.js",  
     "dev": "nodemon backend/server.js",
-    "seed": "node seeder.js"
+    "seed": "node seeder.js",
+    "logs": "node scripts/logConsumer.js",
+    "inspect-logs": "node scripts/inspectLogs.js",
+    "inspect-logs:tail": "node scripts/inspectLogs.js --tail 20"
   },
   "keywords": [],
   "author": "",

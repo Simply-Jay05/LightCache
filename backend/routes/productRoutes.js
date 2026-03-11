@@ -1,6 +1,8 @@
 const express = require("express");
 const Product = require("../models/Product");
 const { protect, admin } = require("../middleware/authMiddleware");
+const { cacheMiddleware } = require("../middleware/cacheMiddleware");
+const { cacheDelPattern } = require("../config/redis");
 
 const router = express.Router();
 

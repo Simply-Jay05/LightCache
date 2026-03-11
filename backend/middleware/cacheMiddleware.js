@@ -3,13 +3,12 @@ const { cacheGet, cacheSet, logCacheEvent } = require("../config/redis");
 // Default TTLs per route type (seconds)
 
 const DEFAULT_TTLS = {
-  products_list: 300,      // 5 min  — product listings change occasionally
-  product_single: 600,     // 10 min — individual products change rarely
-  best_seller: 120,        // 2 min  — best seller rank can shift
-  new_arrivals: 180,       // 3 min  — new arrivals update periodically
-  similar_products: 600,   // 10 min — similar products rarely change
+  products_list: 300, // 5 min  — product listings change occasionally
+  product_single: 600, // 10 min — individual products change rarely
+  best_seller: 120, // 2 min  — best seller rank can shift
+  new_arrivals: 180, // 3 min  — new arrivals update periodically
+  similar_products: 600, // 10 min — similar products rarely change
 };
-
 
 //  Build a deterministic cache key from the request
 //  e.g. "products:list:gender=Women&category=Bottom Wear&limit=8"
@@ -33,7 +32,6 @@ const buildCacheKey = (req, type) => {
   }
 };
 
-
 // Extract a rough page type from the request for logging
 const getPageType = (req) => {
   if (req.path.includes("best-seller")) return "best_seller";
@@ -42,7 +40,6 @@ const getPageType = (req) => {
   if (req.params.id) return "product_detail";
   return "collection";
 };
-
 
 // Cache middleware factory
 // Usage: router.get("/", cacheMiddleware("products_list"), handler)
@@ -74,21 +71,17 @@ const cacheMiddleware = (type) => {
 
       console.log(`CACHE HIT  [${type}] ${cacheKey} (${latency}ms)`);
 
-      return res.json({
-        ...cached,
-        _cache: { hit: true, key: cacheKey, ttl },
-      });
+      return res.json(cached);
     }
 
-    //Cache MISS — intercept res.json to cache the response 
+    //Cache MISS — intercept res.json to cache the response
     const originalJson = res.json.bind(res);
 
     res.json = async (data) => {
       const latency = Date.now() - startTime;
 
-      // Store in cache (strip any existing _cache meta before storing)
-      const { _cache, ...cleanData } = data || {};
-      await cacheSet(cacheKey, cleanData, ttl);
+      // Store data exactly as-is (arrays stay arrays, objects stay objects)
+      await cacheSet(cacheKey, data, ttl);
 
       // Log the miss
       await logCacheEvent({
@@ -104,10 +97,12 @@ const cacheMiddleware = (type) => {
         weekday: new Date().getDay().toString(),
       });
 
-      console.log(`CACHE MISS [${type}] ${cacheKey} (${latency}ms) → cached for ${ttl}s`);
+      console.log(
+        `CACHE MISS [${type}] ${cacheKey} (${latency}ms) → cached for ${ttl}s`,
+      );
 
       // Send the original response with cache metadata
-      return originalJson({ ...cleanData, _cache: { hit: false, key: cacheKey, ttl } });
+      return originalJson(data);
     };
 
     next();
