@@ -3,8 +3,9 @@
 node_modules/
 # Ignore Python virtual enviroment
 venv/
-locust/__pycache__
+__pycache__/
 README.md
+ml-service/model/
 
 # --- Environment & Secrets ---
 # Crucial: Protects your database strings and JWT keys
