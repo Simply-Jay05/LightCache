@@ -12,11 +12,12 @@ const CacheDashboard = () => {
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState("overview");
   const [flushing, setFlushing] = useState(false);
+  const [retrainHistory, setRetrainHistory] = useState(null);
 
   const fetchData = useCallback(async () => {
     try {
       setError(null);
-      const [statsRes, abRes] = await Promise.all([
+      const [statsRes, abRes, retrainRes] = await Promise.all([
         axios.get(
           `${import.meta.env.VITE_BACKEND_URL}/api/cache/stats`,
           authHeaders(),
@@ -25,9 +26,16 @@ const CacheDashboard = () => {
           `${import.meta.env.VITE_BACKEND_URL}/api/cache/ab`,
           authHeaders(),
         ),
+        axios
+          .get(
+            `${import.meta.env.VITE_BACKEND_URL}/api/ml/retrain-history`,
+            authHeaders(),
+          )
+          .catch(() => ({ data: { history: [] } })),
       ]);
       setStats(statsRes.data);
       setAb(abRes.data);
+      setRetrainHistory(retrainRes.data);
     } catch (err) {
       setError("Failed to load cache data. Make sure Redis is running.");
     } finally {
@@ -179,19 +187,21 @@ const CacheDashboard = () => {
 
       {/* Tabs */}
       <div className="flex gap-1 mb-6 border-b">
-        {["overview", "ab-comparison", "keys", "logs"].map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2 text-sm font-medium capitalize transition-colors ${
-              activeTab === tab
-                ? "border-b-2 border-black text-black"
-                : "text-gray-500 hover:text-black"
-            }`}
-          >
-            {tab.replace("-", " ")}
-          </button>
-        ))}
+        {["overview", "ab-comparison", "keys", "logs", "retraining"].map(
+          (tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`px-4 py-2 text-sm font-medium capitalize transition-colors ${
+                activeTab === tab
+                  ? "border-b-2 border-black text-black"
+                  : "text-gray-500 hover:text-black"
+              }`}
+            >
+              {tab.replace("-", " ")}
+            </button>
+          ),
+        )}
       </div>
 
       {/* ── Tab: Overview ─────────────────────────────────────────────────────── */}
@@ -505,6 +515,112 @@ const CacheDashboard = () => {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* ── Tab: Retraining ───────────────────────────────────────────────── */}
+      {activeTab === "retraining" && (
+        <div className="space-y-6">
+          {/* Current model info */}
+          {stats && (
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+              {[
+                {
+                  label: "Model Trained At",
+                  value: retrainHistory?.latest?.retrained_at
+                    ? new Date(
+                        retrainHistory.latest.retrained_at,
+                      ).toLocaleString()
+                    : "Initial model",
+                },
+                {
+                  label: "Total Retrains",
+                  value: retrainHistory?.total_retrains ?? 0,
+                },
+                {
+                  label: "Latest TTL R²",
+                  value: retrainHistory?.latest?.ttl_r2 ?? "—",
+                },
+              ].map((card) => (
+                <div key={card.label} className="p-4 border rounded-lg">
+                  <p className="text-sm text-gray-500">{card.label}</p>
+                  <p className="text-xl font-bold mt-1">{card.value}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Retraining history table */}
+          <div className="border rounded-lg overflow-hidden">
+            <div className="px-4 py-3 bg-gray-50 border-b">
+              <h2 className="font-semibold">Retraining History</h2>
+              <p className="text-xs text-gray-500 mt-1">
+                Model retrains every <span className="font-medium">3 days</span>{" "}
+                on a <span className="font-medium">30-day rolling window</span>
+              </p>
+            </div>
+            {!retrainHistory || retrainHistory.history.length === 0 ? (
+              <div className="px-4 py-8 text-center text-gray-400">
+                No retraining history yet. First retrain runs after 3 days or
+                when 1,000+ new rows are collected.
+              </div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 text-gray-500">
+                  <tr>
+                    {[
+                      "Date",
+                      "Rows",
+                      "TTL MAE",
+                      "TTL R²",
+                      "Duration",
+                      "Hot Reload",
+                    ].map((h) => (
+                      <th key={h} className="px-4 py-2 text-left">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...retrainHistory.history].reverse().map((entry, i) => (
+                    <tr key={i} className="border-t">
+                      <td className="px-4 py-2 text-xs">
+                        {new Date(entry.retrained_at).toLocaleString()}
+                      </td>
+                      <td className="px-4 py-2">
+                        {entry.training_rows?.toLocaleString()}
+                      </td>
+                      <td className="px-4 py-2">{entry.ttl_mae}s</td>
+                      <td className="px-4 py-2">
+                        <span
+                          className={
+                            parseFloat(entry.ttl_r2) > 0.3
+                              ? "text-green-600"
+                              : "text-yellow-600"
+                          }
+                        >
+                          {entry.ttl_r2}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2">{entry.elapsed_seconds}s</td>
+                      <td className="px-4 py-2">
+                        {entry.hot_reloaded ? (
+                          <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
+                            ✓ Yes
+                          </span>
+                        ) : (
+                          <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full">
+                            ✗ No
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
         </div>
       )}
     </div>

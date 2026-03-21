@@ -17,6 +17,7 @@ const adminRoutes = require("./routes/adminRoutes");
 const productAdminRoutes = require("./routes/productAdminRoutes");
 const adminOrderRoutes = require("./routes/adminOrderRoutes");
 const cacheRoutes = require("./routes/cacheRoutes");
+const mlRoutes = require("./routes/mlRoutes");
 
 const app = express();
 app.use(express.json());
@@ -51,6 +52,7 @@ app.use("/api/orders", orderRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api", subscribeRoute);
 app.use("/api/cache", cacheRoutes);
+app.use("/api/ml", mlRoutes);
 
 // Admin
 app.use("/api/admin/users", adminRoutes);

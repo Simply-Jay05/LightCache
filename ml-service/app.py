@@ -44,7 +44,7 @@ print(f"Model loaded — trained on {META['training_rows']:,} rows")
 print(f"Trained at: {META['trained_at']}")
 
 
-# Schemas
+# Schemas 
 class PredictRequest(BaseModel):
     route_type:               str
     page_type:                str
@@ -109,7 +109,7 @@ def build_vector(req: PredictRequest) -> np.ndarray:
     ]])
 
 
-# Predict function (used both by endpoint and warmup)
+# Predict function (used both by endpoint and warmup) 
 def run_predict(req: PredictRequest) -> PredictResponse:
     t0 = time.perf_counter()
 
@@ -183,7 +183,6 @@ app.add_middleware(
 )
 
 
-
 # Routes
 @app.get("/health")
 def health():
@@ -217,6 +216,58 @@ def model_info():
         },
     }
 
+
+
+@app.post("/admin/reload")
+def reload_model():
+    """
+    Hot-reload the model from disk without restarting the service.
+    Called automatically by retrain_scheduler.py after retraining.
+    Zero downtime — old model serves requests until new one is loaded.
+    """
+    global TTL_MODEL, EVICT_MODEL, PREFETCH_MODEL, FEATURE_COLS, ROUTE_TYPES, META
+
+    if not MODEL_PATH.exists():
+        raise HTTPException(status_code=404, detail="Model file not found")
+
+    try:
+        with open(MODEL_PATH, "rb") as f:
+            new_bundle = pickle.load(f)
+
+        # Atomic swap — update globals
+        TTL_MODEL      = new_bundle["ttl_model"]
+        EVICT_MODEL    = new_bundle["evict_model"]
+        PREFETCH_MODEL = new_bundle["prefetch_model"]
+        FEATURE_COLS   = new_bundle["feature_cols"]
+        ROUTE_TYPES    = new_bundle["route_types"]
+
+        with open(META_PATH, "r") as f:
+            META = json.load(f)
+
+        print(f"✅ Model hot-reloaded — trained on {META['training_rows']:,} rows")
+
+        return {
+            "status":        "reloaded",
+            "trained_at":    META["trained_at"],
+            "training_rows": META["training_rows"],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Reload failed: {str(e)}")
+
+
+@app.get("/admin/retrain-history")
+def retrain_history():
+    """Returns the full retraining history for the dashboard."""
+    history_file = BASE_DIR / "model" / "retrain_history.json"
+    if not history_file.exists():
+        return {"history": [], "message": "No retraining history yet"}
+    with open(history_file, "r") as f:
+        history = json.load(f)
+    return {
+        "history":        history,
+        "total_retrains": len(history),
+        "latest":         history[-1] if history else None,
+    }
 
 if __name__ == "__main__":
     uvicorn.run(

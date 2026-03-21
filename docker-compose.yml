@@ -14,13 +14,21 @@ services:
       timeout: 3s
       retries: 5
 
-  # ML Service
+  # ML Service (includes retrain scheduler)
   ml-service:
     build:
       context: ./ml-service
       dockerfile: Dockerfile
     container_name: lightcache-ml
     restart: unless-stopped
+    environment:
+      RETRAIN_INTERVAL_DAYS: ${RETRAIN_INTERVAL_DAYS:-3}
+      ROLLING_WINDOW_DAYS: ${ROLLING_WINDOW_DAYS:-30}
+      MIN_ROWS_TO_RETRAIN: ${MIN_ROWS_TO_RETRAIN:-1000}
+      ML_SERVICE_URL: http://localhost:8000
+    volumes:
+      - logs_data:/app/logs # shared logs — scheduler reads from here
+      - model_data:/app/model # persists retrained models
     networks:
       - lightcache-net
     healthcheck:
@@ -53,6 +61,8 @@ services:
       REDIS_URL: redis://redis:6379
       ML_SERVICE_URL: http://ml-service:8000
       ML_ENABLED: "true"
+    volumes:
+      - logs_data:/app/logs # shared logs — backend writes to here
     depends_on:
       redis:
         condition: service_healthy
@@ -80,6 +90,8 @@ services:
 # Volumes
 volumes:
   redis_data:
+  logs_data: # shared between backend (writes) and ml-service (reads)
+  model_data: # persists retrained models across container restarts
 
 # Network
 networks:
