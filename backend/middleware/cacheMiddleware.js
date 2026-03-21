@@ -1,5 +1,6 @@
 const { cacheGet, cacheSet, logCacheEvent } = require("../config/redis");
 const { getPrediction, updateKeyStats } = require("../config/mlClient");
+const { getClient } = require("../config/redis");
 
 // Fallback TTLs — used when ML service is unavailable
 const DEFAULT_TTLS = {
@@ -10,11 +11,18 @@ const DEFAULT_TTLS = {
   similar_products: 600,
 };
 
-// Cache key builder
+// Minimum TTL floor for real user browsing
+const MIN_TTLS = {
+  products_list: 120,
+  product_single: 180,
+  best_seller: 90,
+  new_arrivals: 120,
+  similar_products: 180,
+};
+
 const buildCacheKey = (req, type) => {
   const queryString = new URLSearchParams(req.query).toString();
   const paramId = req.params.id || "";
-
   switch (type) {
     case "products_list":
       return `products:list:${queryString}`;
@@ -31,7 +39,6 @@ const buildCacheKey = (req, type) => {
   }
 };
 
-// Page type extractor
 const getPageType = (req) => {
   if (req.path.includes("best-seller")) return "best_seller";
   if (req.path.includes("new-arrivals")) return "new_arrivals";
@@ -40,7 +47,6 @@ const getPageType = (req) => {
   return "collection";
 };
 
-// Price tier extractor
 const getPriceTier = (req) => {
   const max = parseFloat(req.query.maxPrice || "0");
   if (!max) return "unknown";
@@ -49,24 +55,58 @@ const getPriceTier = (req) => {
   return "premium";
 };
 
-// Middleware factory
+// Store ML metadata alongside the cached entry so HITs know if ML was used
+const setKeyMeta = async (cacheKey, ttl, mlUsed, rawTtl) => {
+  const client = getClient();
+  if (!client) return;
+  try {
+    const metaKey = `meta:${cacheKey}`;
+    await client.setEx(
+      metaKey,
+      ttl,
+      JSON.stringify({
+        ml_used: mlUsed,
+        ttl_used: ttl,
+        raw_ml_ttl: rawTtl,
+      }),
+    );
+  } catch {
+    /* silent */
+  }
+};
 
+const getKeyMeta = async (cacheKey) => {
+  const client = getClient();
+  if (!client) return null;
+  try {
+    const val = await client.get(`meta:${cacheKey}`);
+    return val ? JSON.parse(val) : null;
+  } catch {
+    return null;
+  }
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
 const cacheMiddleware = (type) => {
   return async (req, res, next) => {
     const cacheKey = buildCacheKey(req, type);
     const fallbackTtl = DEFAULT_TTLS[type] || 300;
+    const minTtl = MIN_TTLS[type] || 120;
     const startTime = Date.now();
     const pageType = getPageType(req);
     const priceTier = getPriceTier(req);
 
-    // CACHE HIT
+    // ── CACHE HIT ─────────────────────────────────────────────────────────────
     const cached = await cacheGet(cacheKey);
 
     if (cached !== null) {
       const latency = Date.now() - startTime;
-
-      // Update in-memory key stats
       updateKeyStats(cacheKey, true);
+
+      // Look up whether this key was originally cached with ML
+      const meta = await getKeyMeta(cacheKey);
+      const mlUsed = meta?.ml_used ?? false;
+      const ttlUsed = meta?.ttl_used ?? fallbackTtl;
 
       await logCacheEvent({
         event_type: "HIT",
@@ -75,29 +115,30 @@ const cacheMiddleware = (type) => {
         page_type: pageType,
         item_id: req.params.id || "",
         query: JSON.stringify(req.query),
-        ttl_used: fallbackTtl.toString(),
+        ttl_used: ttlUsed.toString(),
         latency_ms: latency.toString(),
         hour_of_day: new Date().getHours().toString(),
         weekday: new Date().getDay().toString(),
+        ml_used: mlUsed.toString(),
       });
 
-      console.log(`🟢 CACHE HIT  [${type}] ${cacheKey} (${latency}ms)`);
+      console.log(
+        `🟢 CACHE HIT  [${type}] ${cacheKey} (${latency}ms) [${mlUsed ? "ML" : "fixed"}]`,
+      );
       return res.json(cached);
     }
 
-    // CACHE MISS
+    // ── CACHE MISS ────────────────────────────────────────────────────────────
     const originalJson = res.json.bind(res);
 
     res.json = async (data) => {
       const latency = Date.now() - startTime;
-
-      // Update in-memory key stats
       updateKeyStats(cacheKey, false);
 
-      // Ask the ML service for a predicted TTL
       let ttl = fallbackTtl;
       let mlUsed = false;
       let evictScore = null;
+      let rawMlTtl = null;
 
       const prediction = await getPrediction({
         route_type: type,
@@ -111,30 +152,16 @@ const cacheMiddleware = (type) => {
       });
 
       if (prediction && prediction.ttl_seconds) {
-        ttl = prediction.ttl_seconds;
+        rawMlTtl = prediction.ttl_seconds;
+        ttl = Math.max(prediction.ttl_seconds, minTtl);
         evictScore = prediction.eviction_score;
         mlUsed = true;
-
-        // Fire-and-forget: warm the top-3 prefetch candidates in the background
-        // so they are ready in Redis before the user requests them
-        if (prediction.prefetch_top3 && prediction.prefetch_top3.length > 0) {
-          setImmediate(() => {
-            prediction.prefetch_top3.forEach((routeType) => {
-              console.log(
-                `PREFETCH queued [${routeType}] (predicted next after ${type})`,
-              );
-              // Note: actual HTTP prefetch calls will be added in Phase 6
-              // when the full service mesh is wired up via Docker Compose.
-              // For now we log the prediction so it appears in your thesis evidence.
-            });
-          });
-        }
       }
 
-      // Store in cache with ML-predicted (or fallback) TTL
+      // Store data and metadata
       await cacheSet(cacheKey, data, ttl);
+      await setKeyMeta(cacheKey, ttl, mlUsed, rawMlTtl);
 
-      // Log the miss with the TTL actually used
       await logCacheEvent({
         event_type: "MISS",
         cache_key: cacheKey,
@@ -148,10 +175,11 @@ const cacheMiddleware = (type) => {
         weekday: new Date().getDay().toString(),
         ml_used: mlUsed.toString(),
         eviction_score: evictScore !== null ? evictScore.toString() : "",
+        raw_ml_ttl: rawMlTtl !== null ? rawMlTtl.toString() : "",
       });
 
       const ttlSource = mlUsed
-        ? `ML:${ttl}s (was ${fallbackTtl}s)`
+        ? `ML:${ttl}s (raw:${rawMlTtl}s, min:${minTtl}s)`
         : `fallback:${ttl}s`;
 
       console.log(

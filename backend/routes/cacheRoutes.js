@@ -1,143 +1,257 @@
+/**
+ * Phase 7 — Cache Stats & A/B Evaluation Routes
+ * ─────────────────────────────────────────────────────────────────
+ * GET  /api/cache/stats     — full dashboard data
+ * GET  /api/cache/ab        — A/B comparison (vanilla vs ML TTL)
+ * DELETE /api/cache/flush   — clear all product cache keys
+ * DELETE /api/cache/flush-logs — clear Redis Stream logs
+ */
+
 const express = require("express");
-const { getClient, getIsConnected, cacheDelPattern } = require("../config/redis");
-const { protect, admin } = require("../middleware/authMiddleware");
-
 const router = express.Router();
+const { protect, admin } = require("../middleware/authMiddleware");
+const { getClient, getIsConnected } = require("../config/redis");
+const { keyStats } = require("../config/mlClient");
+const { DEFAULT_TTLS } = require("../middleware/cacheMiddleware");
 
-// @route GET /api/cache/stats
-// @desc Returns live cache statistics: hit rate, key count, memory usage, recent logs
-// @access: Private/Admin 
+// ── GET /api/cache/stats ──────────────────────────────────────────────────────
 router.get("/stats", protect, admin, async (req, res) => {
   const client = getClient();
-  const connected = getIsConnected();
-
-  if (!connected || !client) {
-    return res.json({
-      connected: false,
-      message: "Redis is not connected",
-      stats: null,
-    });
+  if (!client || !getIsConnected()) {
+    return res.status(503).json({ message: "Redis not available" });
   }
 
   try {
-    // Get all cache keys
-    const allKeys = await client.keys("products:*");
+    // ── Stream log analysis ───────────────────────────────────────────────────
+    const streamEntries = await client.xRange("cache:logs", "-", "+");
 
-    // Get Redis server info
-    const info = await client.info("memory");
-    const memoryMatch = info.match(/used_memory_human:(.+)/);
-    const memoryUsed = memoryMatch ? memoryMatch[1].trim() : "unknown";
+    let hits = 0,
+      misses = 0;
+    let hitLatencySum = 0,
+      missLatencySum = 0;
+    let mlUsedCount = 0;
+    const byRoute = {};
+    const recentLogs = [];
+    const hourBuckets = Array(24).fill(0);
 
-    // Read recent logs from the Redis Stream (last 200 entries)
-    const rawLogs = await client.xRevRange("cache:logs", "+", "-", { COUNT: 200 });
+    streamEntries.forEach((entry) => {
+      const d = entry.message;
+      const isHit = d.event_type === "HIT";
+      const rawLatency = parseFloat(d.latency_ms || 0);
+      const latency = rawLatency >= 0 && rawLatency < 60000 ? rawLatency : 0;
+      const route = d.route_type || "unknown";
+      const hour = parseInt(d.hour_of_day || 0, 10);
+      const mlUsed = d.ml_used === "true";
 
-    // Parse stream entries
-    const logs = rawLogs.map((entry) => ({
-      id: entry.id,
-      ...entry.message,
-    }));
+      if (isHit) {
+        hits++;
+        hitLatencySum += latency;
+      } else {
+        misses++;
+        missLatencySum += latency;
+      }
+      if (mlUsed) mlUsedCount++;
 
-    // Calculate hit/miss counts
-    const hits = logs.filter((l) => l.event_type === "HIT").length;
-    const misses = logs.filter((l) => l.event_type === "MISS").length;
+      if (!byRoute[route])
+        byRoute[route] = { hits: 0, misses: 0, latencySum: 0 };
+      byRoute[route][isHit ? "hits" : "misses"]++;
+      byRoute[route].latencySum += latency;
+
+      if (!isNaN(hour) && hour >= 0 && hour < 24) hourBuckets[hour]++;
+
+      recentLogs.push({
+        event_type: d.event_type,
+        cache_key: d.cache_key,
+        route_type: d.route_type,
+        latency_ms: latency,
+        ttl_used: parseInt(d.ttl_used || 0, 10),
+        ml_used: mlUsed,
+        eviction_score: d.eviction_score || null,
+        timestamp: parseInt(d.timestamp || 0, 10),
+      });
+    });
+
     const total = hits + misses;
     const hitRate = total > 0 ? ((hits / total) * 100).toFixed(1) : "0.0";
-
-    // Average latency
-    const latencies = logs
-      .map((l) => parseFloat(l.latency_ms))
-      .filter((n) => !isNaN(n));
-    const avgLatency =
-      latencies.length > 0
-        ? (latencies.reduce((a, b) => a + b, 0) / latencies.length).toFixed(1)
-        : "0.0";
-
-    // Hit latency vs miss latency
-    const hitLatencies = logs
-      .filter((l) => l.event_type === "HIT")
-      .map((l) => parseFloat(l.latency_ms))
-      .filter((n) => !isNaN(n));
-
-    const missLatencies = logs
-      .filter((l) => l.event_type === "MISS")
-      .map((l) => parseFloat(l.latency_ms))
-      .filter((n) => !isNaN(n));
-
-    const avgHitLatency =
-      hitLatencies.length > 0
-        ? (hitLatencies.reduce((a, b) => a + b, 0) / hitLatencies.length).toFixed(1)
-        : "0.0";
-
+    const avgHitLatency = hits > 0 ? (hitLatencySum / hits).toFixed(2) : "0";
     const avgMissLatency =
-      missLatencies.length > 0
-        ? (missLatencies.reduce((a, b) => a + b, 0) / missLatencies.length).toFixed(1)
-        : "0.0";
+      misses > 0 ? (missLatencySum / misses).toFixed(2) : "0";
+    const mlUsageRate =
+      total > 0 ? ((mlUsedCount / misses || 0) * 100).toFixed(1) : "0.0";
 
-    // Breakdown by route type
-    const byType = {};
-    logs.forEach((l) => {
-      const t = l.route_type || "unknown";
-      if (!byType[t]) byType[t] = { hits: 0, misses: 0 };
-      if (l.event_type === "HIT") byType[t].hits++;
-      else byType[t].misses++;
-    });
+    // Route breakdown
+    const routeStats = Object.entries(byRoute).map(([route, data]) => ({
+      route,
+      hits: data.hits,
+      misses: data.misses,
+      total: data.hits + data.misses,
+      hit_rate:
+        data.hits + data.misses > 0
+          ? ((data.hits / (data.hits + data.misses)) * 100).toFixed(1)
+          : "0.0",
+      avg_latency:
+        data.hits + data.misses > 0
+          ? (data.latencySum / (data.hits + data.misses)).toFixed(2)
+          : "0",
+    }));
 
-    // TTL info for each cached key
-    const keyDetails = await Promise.all(
-      allKeys.slice(0, 50).map(async (key) => {
+    // Cached keys with TTL
+    const keys = await client.keys("products:*");
+    const cachedKeys = await Promise.all(
+      keys.slice(0, 50).map(async (key) => {
         const ttl = await client.ttl(key);
         return { key, ttl };
-      })
+      }),
     );
 
+    // In-memory key stats from mlClient
+    const topKeys = Array.from(keyStats.entries())
+      .sort((a, b) => b[1].total - a[1].total)
+      .slice(0, 20)
+      .map(([key, stats]) => ({
+        key,
+        total: stats.total,
+        hits: stats.hits,
+        hit_rate:
+          stats.total > 0
+            ? ((stats.hits / stats.total) * 100).toFixed(1)
+            : "0.0",
+      }));
+
     res.json({
-      connected: true,
       summary: {
-        totalKeys: allKeys.length,
-        memoryUsed,
-        hitRate: `${hitRate}%`,
-        totalRequests: total,
+        total_requests: total,
         hits,
         misses,
-        avgLatencyMs: avgLatency,
-        avgHitLatencyMs: avgHitLatency,
-        avgMissLatencyMs: avgMissLatency,
+        hit_rate: `${hitRate}%`,
+        avg_hit_latency: `${avgHitLatency}ms`,
+        avg_miss_latency: `${avgMissLatency}ms`,
+        ml_usage_rate: `${mlUsageRate}%`,
+        cached_keys: keys.length,
       },
-      byRouteType: byType,
-      recentLogs: logs.slice(0, 20),
-      cachedKeys: keyDetails,
+      by_route: routeStats,
+      by_hour: hourBuckets,
+      cached_keys: cachedKeys,
+      top_keys: topKeys,
+      recent_logs: recentLogs.slice(-30).reverse(),
     });
   } catch (err) {
-    console.error("Cache stats error:", err);
-    res.status(500).json({ message: "Failed to fetch cache stats", error: err.message });
+    res.status(500).json({ message: err.message });
   }
 });
 
-// @route DELETE /api/cache/flush 
-// @desc Clears all product cache keys (useful after seeding or bulk product updates)
-// @access Private/Admin 
-router.delete("/flush", protect, admin, async (req, res) => {
+// ── GET /api/cache/ab ─────────────────────────────────────────────────────────
+// A/B comparison — compares ML-predicted TTLs vs what fixed TTLs would have been
+router.get("/ab", protect, admin, async (req, res) => {
+  const client = getClient();
+  if (!client || !getIsConnected()) {
+    return res.status(503).json({ message: "Redis not available" });
+  }
+
   try {
-    await cacheDelPattern("products:*");
-    console.log("Cache flushed by admin");
-    res.json({ message: "Cache flushed successfully" });
+    const streamEntries = await client.xRange("cache:logs", "-", "+");
+
+    // Separate ML-used vs fallback entries
+    const mlEntries = streamEntries.filter((e) => e.message.ml_used === "true");
+    const fallbackEntries = streamEntries.filter(
+      (e) => e.message.ml_used === "false" || !e.message.ml_used,
+    );
+
+    // TTL analysis per route
+    const routeTtlComparison = {};
+    streamEntries.forEach((entry) => {
+      const d = entry.message;
+      const route = d.route_type || "unknown";
+      const ttl = parseInt(d.ttl_used || 0, 10);
+      const fixed = DEFAULT_TTLS[route] || 300;
+      const mlUsed = d.ml_used === "true";
+
+      if (!routeTtlComparison[route]) {
+        routeTtlComparison[route] = {
+          route,
+          fixed_ttl: fixed,
+          ml_ttl_sum: 0,
+          ml_ttl_count: 0,
+          fixed_hits: 0,
+          ml_hits: 0,
+          fixed_misses: 0,
+          ml_misses: 0,
+        };
+      }
+
+      if (mlUsed) {
+        routeTtlComparison[route].ml_ttl_sum += ttl;
+        routeTtlComparison[route].ml_ttl_count += 1;
+        if (d.event_type === "HIT") routeTtlComparison[route].ml_hits++;
+        else routeTtlComparison[route].ml_misses++;
+      } else {
+        if (d.event_type === "HIT") routeTtlComparison[route].fixed_hits++;
+        else routeTtlComparison[route].fixed_misses++;
+      }
+    });
+
+    const comparison = Object.values(routeTtlComparison).map((r) => ({
+      route: r.route,
+      fixed_ttl: r.fixed_ttl,
+      ml_avg_ttl:
+        r.ml_ttl_count > 0 ? Math.round(r.ml_ttl_sum / r.ml_ttl_count) : null,
+      ttl_difference:
+        r.ml_ttl_count > 0
+          ? Math.round(r.ml_ttl_sum / r.ml_ttl_count) - r.fixed_ttl
+          : null,
+      fixed_hit_rate:
+        r.fixed_hits + r.fixed_misses > 0
+          ? ((r.fixed_hits / (r.fixed_hits + r.fixed_misses)) * 100).toFixed(1)
+          : "0.0",
+      ml_hit_rate:
+        r.ml_hits + r.ml_misses > 0
+          ? ((r.ml_hits / (r.ml_hits + r.ml_misses)) * 100).toFixed(1)
+          : "0.0",
+    }));
+
+    res.json({
+      summary: {
+        total_entries: streamEntries.length,
+        ml_entries: mlEntries.length,
+        fallback_entries: fallbackEntries.length,
+        ml_coverage:
+          streamEntries.length > 0
+            ? `${((mlEntries.length / streamEntries.length) * 100).toFixed(1)}%`
+            : "0%",
+      },
+      by_route: comparison,
+    });
   } catch (err) {
-    res.status(500).json({ message: "Failed to flush cache", error: err.message });
+    res.status(500).json({ message: err.message });
   }
 });
 
-// @route DELETE /api/cache/flush-logs 
-// @desc Clears the cache:logs stream (for testing fresh runs)
-// @access Private/Admin 
+// ── DELETE /api/cache/flush ───────────────────────────────────────────────────
+router.delete("/flush", protect, admin, async (req, res) => {
+  const client = getClient();
+  if (!client || !getIsConnected()) {
+    return res.status(503).json({ message: "Redis not available" });
+  }
+  try {
+    const keys = await client.keys("products:*");
+    if (keys.length > 0) await client.del(keys);
+    res.json({ message: `Flushed ${keys.length} cache keys` });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ── DELETE /api/cache/flush-logs ──────────────────────────────────────────────
 router.delete("/flush-logs", protect, admin, async (req, res) => {
   const client = getClient();
-  if (!client) return res.status(503).json({ message: "Redis not connected" });
+  if (!client || !getIsConnected()) {
+    return res.status(503).json({ message: "Redis not available" });
+  }
   try {
     await client.del("cache:logs");
-    console.log("Cache logs flushed by admin");
-    res.json({ message: "Cache logs flushed successfully" });
+    res.json({ message: "Cache logs cleared" });
   } catch (err) {
-    res.status(500).json({ message: "Failed to flush logs", error: err.message });
+    res.status(500).json({ message: err.message });
   }
 });
 
