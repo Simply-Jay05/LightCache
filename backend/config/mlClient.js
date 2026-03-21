@@ -1,27 +1,73 @@
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || "http://localhost:8000";
-const ML_TIMEOUT_MS = 200; // if ML takes longer than this, use fallback TTL
-const ML_ENABLED = process.env.ML_ENABLED !== "false"; // set ML_ENABLED=false to disable
+const ML_TIMEOUT_MS = 200;
+const ML_ENABLED = process.env.ML_ENABLED !== "false";
 
-// In-memory key stats tracker: Tracks per-key access count and hit rate so we can pass them to the ML model.
-// Resets on server restart — that's fine, the model handles cold starts gracefully.
+//  Per-key stats tracker: Tracks hits, total accesses, last request timestamp, and
+// inter-arrival intervals so we can pass temporal features to the model.
 const keyStats = new Map();
 
 const updateKeyStats = (cacheKey, isHit) => {
-  const existing = keyStats.get(cacheKey) || { hits: 0, total: 0 };
+  const now = Date.now();
+  const existing = keyStats.get(cacheKey) || {
+    hits: 0,
+    total: 0,
+    lastTs: null,
+    intervals: [], // last 10 inter-arrival times in ms
+  };
+
+  // Compute interval since last request for this key
+  const interval = existing.lastTs !== null ? now - existing.lastTs : null;
+  const intervals = existing.intervals.slice(-9); // keep last 9
+  if (interval !== null) intervals.push(interval);
+
   keyStats.set(cacheKey, {
     hits: existing.hits + (isHit ? 1 : 0),
     total: existing.total + 1,
+    lastTs: now,
+    intervals,
   });
 };
 
 const getKeyStats = (cacheKey) => {
   const stats = keyStats.get(cacheKey);
   if (!stats || stats.total === 0) {
-    return { key_access_count: 1, key_hit_rate: 0.5 }; // cold start defaults
+    return {
+      key_access_count: 1,
+      key_hit_rate: 0.5,
+      time_since_last_request: 0,
+      request_interval_mean: 300,
+      request_interval_std: 0,
+    };
   }
+
+  const now = Date.now();
+  const timeSinceLast =
+    stats.lastTs !== null
+      ? (now - stats.lastTs) / 1000 // ms to seconds
+      : 0;
+
+  const intervals = stats.intervals;
+  let intervalMean = 300;
+  let intervalStd = 0;
+
+  if (intervals.length > 0) {
+    const meanMs = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+    intervalMean = meanMs / 1000; // ms to seconds
+
+    if (intervals.length > 1) {
+      const variance =
+        intervals.reduce((sum, v) => sum + Math.pow(v - meanMs, 2), 0) /
+        intervals.length;
+      intervalStd = Math.sqrt(variance) / 1000; // ms to seconds
+    }
+  }
+
   return {
     key_access_count: stats.total,
     key_hit_rate: parseFloat((stats.hits / stats.total).toFixed(4)),
+    time_since_last_request: parseFloat(timeSinceLast.toFixed(2)),
+    request_interval_mean: parseFloat(intervalMean.toFixed(2)),
+    request_interval_std: parseFloat(intervalStd.toFixed(2)),
   };
 };
 
@@ -43,7 +89,8 @@ const getPrediction = async ({
   const weekday = now.getDay();
   const isWeekend = weekday === 0 || weekday === 6 ? 1 : 0;
   const isPeakHour = hour >= 9 && hour <= 21 ? 1 : 0;
-  const { key_access_count, key_hit_rate } = getKeyStats(cache_key);
+
+  const stats = getKeyStats(cache_key);
 
   const body = {
     route_type,
@@ -57,9 +104,13 @@ const getPrediction = async ({
     price_tier,
     ttl_used,
     latency_ms: latency_ms || 0,
-    key_access_count,
-    key_hit_rate,
     is_hit: is_hit ? 1 : 0,
+    // Key stats (includes new temporal features)
+    key_access_count: stats.key_access_count,
+    key_hit_rate: stats.key_hit_rate,
+    time_since_last_request: stats.time_since_last_request,
+    request_interval_mean: stats.request_interval_mean,
+    request_interval_std: stats.request_interval_std,
   };
 
   try {
@@ -74,11 +125,12 @@ const getPrediction = async ({
     });
 
     clearTimeout(timeout);
-
     if (!response.ok) return null;
-    return await response.json();
+
+    const result = await response.json();
+    // result contains: ttl_seconds, eviction_score, prefetch_routes
+    return result;
   } catch {
-    // ML service is down, slow, or timed out — fall back silently
     return null;
   }
 };
