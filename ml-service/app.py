@@ -2,6 +2,7 @@ import json
 import math
 import pickle
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
 
@@ -16,7 +17,7 @@ BASE_DIR   = Path(__file__).parent
 MODEL_PATH = BASE_DIR / "model" / "lightcache_model.pkl"
 META_PATH  = BASE_DIR / "model" / "model_meta.json"
 
-print("🔄 Loading LightCache model bundle...")
+print("Loading LightCache model bundle...")
 
 if not MODEL_PATH.exists():
     raise FileNotFoundError(f"Model not found: {MODEL_PATH}\nRun train.py first.")
@@ -39,41 +40,29 @@ ROUTE_MAP      = META["route_type_map"]
 PAGE_MAP       = META["page_type_map"]
 PRICE_TIER_MAP = META["price_tier_map"]
 
-print(f"✅ Model loaded — trained on {META['training_rows']:,} rows")
-print(f"   Trained at : {META['trained_at']}")
+print(f"Model loaded — trained on {META['training_rows']:,} rows")
+print(f"Trained at: {META['trained_at']}")
 
 
-
-# App
-app = FastAPI(
-    title="LightCache ML Service",
-    description="Dynamic TTL, eviction score and prefetch route predictions",
-    version="1.0.0",
-)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# Schemas 
+# Schemas
 class PredictRequest(BaseModel):
-    route_type:       str
-    page_type:        str
-    item_id:          Optional[str]   = ""
-    cache_key:        str
-    hour_of_day:      int
-    weekday:          int
-    is_weekend:       int
-    is_peak_hour:     int
-    price_tier:       Optional[str]   = "unknown"
-    ttl_used:         Optional[int]   = 300
-    latency_ms:       Optional[float] = 0.0
-    key_access_count: Optional[int]   = 1
-    key_hit_rate:     Optional[float] = 0.5
-    is_hit:           Optional[int]   = 0
+    route_type:               str
+    page_type:                str
+    item_id:                  Optional[str]   = ""
+    cache_key:                str
+    hour_of_day:              int
+    weekday:                  int
+    is_weekend:               int
+    is_peak_hour:             int
+    price_tier:               Optional[str]   = "unknown"
+    ttl_used:                 Optional[int]   = 300
+    latency_ms:               Optional[float] = 0.0
+    key_access_count:         Optional[int]   = 1
+    key_hit_rate:             Optional[float] = 0.5
+    is_hit:                   Optional[int]   = 0
+    time_since_last_request:  Optional[float] = 0.0
+    request_interval_mean:    Optional[float] = 300.0
+    request_interval_std:     Optional[float] = 0.0
 
 
 class PredictResponse(BaseModel):
@@ -89,28 +78,109 @@ def build_vector(req: PredictRequest) -> np.ndarray:
     route_enc = ROUTE_MAP.get(req.route_type, 0)
     page_enc  = PAGE_MAP.get(req.page_type, 0)
     tier_enc  = PRICE_TIER_MAP.get(req.price_tier or "unknown", 0)
+    is_single = 1 if req.route_type in ("product_single", "best_seller") else 0
 
-    log_key_count = math.log1p(req.key_access_count or 1)
-    log_latency   = math.log1p(req.latency_ms or 0)
     hour_sin = math.sin(2 * math.pi * req.hour_of_day / 24)
     hour_cos = math.cos(2 * math.pi * req.hour_of_day / 24)
     day_sin  = math.sin(2 * math.pi * req.weekday / 7)
     day_cos  = math.cos(2 * math.pi * req.weekday / 7)
-    is_single = 1 if req.route_type in ("product_single", "best_seller") else 0
+
+    past_access = req.key_access_count or 1
+    log_past    = math.log1p(past_access)
 
     return np.array([[
-        route_enc, page_enc, tier_enc,
-        req.hour_of_day, req.weekday, req.is_weekend, req.is_peak_hour,
-        hour_sin, hour_cos, day_sin, day_cos,
-        req.key_access_count or 1,
-        log_key_count,
-        req.key_hit_rate or 0.5,
-        req.latency_ms or 0,
-        log_latency,
-        req.ttl_used or 300,
+        route_enc,
+        page_enc,
+        tier_enc,
         is_single,
-        req.is_hit or 0,
+        req.hour_of_day,
+        req.weekday,
+        req.is_peak_hour,
+        hour_sin,
+        hour_cos,
+        day_sin,
+        day_cos,
+        past_access,
+        log_past,
+        req.key_hit_rate or 0.5,
+        req.time_since_last_request or 0.0,
+        req.request_interval_mean or 300.0,
+        req.request_interval_std or 0.0,
     ]])
+
+
+# Predict function (used both by endpoint and warmup)
+def run_predict(req: PredictRequest) -> PredictResponse:
+    t0 = time.perf_counter()
+
+    X = build_vector(req)
+
+    # Output 1 — Dynamic TTL
+    raw_ttl     = float(TTL_MODEL.predict(X)[0])
+    ttl_seconds = int(np.clip(round(raw_ttl), TTL_MIN, TTL_MAX))
+
+    # Output 2 — Eviction Score
+    raw_evict      = float(EVICT_MODEL.predict(X)[0])
+    eviction_score = round(float(np.clip(raw_evict, 0, 200)), 2)
+
+    # Output 3 — Prefetch Routes (top-3 by classifier confidence)
+    proba_list = PREFETCH_MODEL.predict_proba(X)
+    scores = []
+    for i, proba in enumerate(proba_list):
+        route = ROUTE_TYPES[i]
+        if route == req.route_type:
+            continue
+        prob = float(proba[0][1])
+        scores.append((route, prob))
+    scores.sort(key=lambda x: x[1], reverse=True)
+    prefetch_routes = [r for r, _ in scores[:3]]
+
+    inference_ms = round((time.perf_counter() - t0) * 1000, 3)
+
+    return PredictResponse(
+        ttl_seconds=ttl_seconds,
+        eviction_score=eviction_score,
+        prefetch_routes=prefetch_routes,
+        inference_ms=inference_ms,
+        model_version=META["trained_at"],
+    )
+
+
+# Lifespan — runs warmup before accepting requests 
+@asynccontextmanager
+async def lifespan(app):
+    print("Running warmup prediction...")
+    try:
+        dummy = PredictRequest(
+            route_type="product_single",
+            page_type="product_detail",
+            cache_key="warmup",
+            hour_of_day=12,
+            weekday=1,
+            is_weekend=0,
+            is_peak_hour=1,
+        )
+        result = run_predict(dummy)
+        print(f"Warmup complete — first inference took {result.inference_ms}ms, model is hot")
+    except Exception as e:
+        print(f"Warmup failed (non-critical): {e}")
+    yield  # app runs here until shutdown
+
+
+
+# App
+app = FastAPI(
+    title="LightCache ML Service",
+    description="Dynamic TTL, eviction score and prefetch route predictions",
+    version="3.0.0",
+    lifespan=lifespan,
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 
@@ -126,40 +196,8 @@ def health():
 
 @app.post("/predict", response_model=PredictResponse)
 def predict(req: PredictRequest):
-    t0 = time.perf_counter()
     try:
-        X = build_vector(req)
-
-        # Output 1 — Dynamic TTL
-        raw_ttl     = float(TTL_MODEL.predict(X)[0])
-        ttl_seconds = int(np.clip(round(raw_ttl), TTL_MIN, TTL_MAX))
-
-        # Output 2 — Eviction Score
-        raw_evict      = float(EVICT_MODEL.predict(X)[0])
-        eviction_score = round(float(np.clip(raw_evict, 0, 200)), 2)
-
-        # Output 3 — Prefetch Routes (top-3 by classifier confidence)
-        proba_list = PREFETCH_MODEL.predict_proba(X)
-        scores = []
-        for i, proba in enumerate(proba_list):
-            route = ROUTE_TYPES[i]
-            if route == req.route_type:
-                continue  # skip the route we're already serving
-            prob = float(proba[0][1])
-            scores.append((route, prob))
-        scores.sort(key=lambda x: x[1], reverse=True)
-        prefetch_routes = [r for r, _ in scores[:3]]
-
-        inference_ms = round((time.perf_counter() - t0) * 1000, 3)
-
-        return PredictResponse(
-            ttl_seconds=ttl_seconds,
-            eviction_score=eviction_score,
-            prefetch_routes=prefetch_routes,
-            inference_ms=inference_ms,
-            model_version=META["trained_at"],
-        )
-
+        return run_predict(req)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -181,4 +219,10 @@ def model_info():
 
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False, log_level="info")
+    uvicorn.run(
+        "app:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=False,
+        log_level="info",
+    )
