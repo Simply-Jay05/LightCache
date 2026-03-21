@@ -1,6 +1,10 @@
 # --- Dependencies ---
 # Ignores node_modules in root, backend, and frontend
 node_modules/
+# Ignore Python virtual enviroment
+venv/
+locust/__pycache__
+README.md
 
 # --- Environment & Secrets ---
 # Crucial: Protects your database strings and JWT keys

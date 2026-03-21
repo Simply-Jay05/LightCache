@@ -26,9 +26,21 @@ const PORT = process.env.PORT || 3000;
 
 // Connect to databases
 connectDB();
-connectRedis(); // Non-blocking — app starts even if Redis is unavailable
+connectRedis();
 
-// API Routes 
+// Check ML service availability on boot
+const { checkMlService } = require("./config/mlClient");
+setTimeout(async () => {
+  const mlUp = await checkMlService();
+  if (mlUp) {
+    console.log("🤖 ML service connected — dynamic TTL active");
+  } else {
+    console.warn("⚠️  ML service not available — using fixed TTL fallbacks");
+    console.warn("   Start it with: cd ml-service && python app.py");
+  }
+}, 2000);
+
+// API Routes
 app.get("/", (req, res) => res.send("WELCOME TO LIGHTCACHE API"));
 
 app.use("/api/users", userRoutes);
@@ -38,7 +50,7 @@ app.use("/api/checkout", checkoutRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api", subscribeRoute);
-app.use("/api/cache", cacheRoutes);  
+app.use("/api/cache", cacheRoutes);
 
 // Admin
 app.use("/api/admin/users", adminRoutes);
