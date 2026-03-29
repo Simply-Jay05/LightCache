@@ -255,6 +255,19 @@ def reload_model():
         raise HTTPException(status_code=500, detail=f"Reload failed: {str(e)}")
 
 
+
+@app.get("/benchmark/results")
+def benchmark_results():
+    """Returns saved benchmark results from benchmark.py."""
+    results_file = BASE_DIR / "model" / "benchmark_results.json"
+    if not results_file.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="No benchmark results found. Run benchmark.py first."
+        )
+    with open(results_file, "r") as f:
+        return json.load(f)
+
 @app.get("/admin/retrain-history")
 def retrain_history():
     """Returns the full retraining history for the dashboard."""

@@ -13,11 +13,12 @@ const CacheDashboard = () => {
   const [activeTab, setActiveTab] = useState("overview");
   const [flushing, setFlushing] = useState(false);
   const [retrainHistory, setRetrainHistory] = useState(null);
+  const [benchmark, setBenchmark] = useState(null);
 
   const fetchData = useCallback(async () => {
     try {
       setError(null);
-      const [statsRes, abRes, retrainRes] = await Promise.all([
+      const [statsRes, abRes, retrainRes, benchmarkRes] = await Promise.all([
         axios.get(
           `${import.meta.env.VITE_BACKEND_URL}/api/cache/stats`,
           authHeaders(),
@@ -32,10 +33,17 @@ const CacheDashboard = () => {
             authHeaders(),
           )
           .catch(() => ({ data: { history: [] } })),
+        axios
+          .get(
+            `${import.meta.env.VITE_BACKEND_URL}/api/cache/benchmark`,
+            authHeaders(),
+          )
+          .catch(() => ({ data: { results: null } })),
       ]);
       setStats(statsRes.data);
       setAb(abRes.data);
       setRetrainHistory(retrainRes.data);
+      setBenchmark(benchmarkRes?.data || null);
     } catch (err) {
       setError("Failed to load cache data. Make sure Redis is running.");
     } finally {
@@ -187,24 +195,29 @@ const CacheDashboard = () => {
 
       {/* Tabs */}
       <div className="flex gap-1 mb-6 border-b">
-        {["overview", "ab-comparison", "keys", "logs", "retraining"].map(
-          (tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`px-4 py-2 text-sm font-medium capitalize transition-colors ${
-                activeTab === tab
-                  ? "border-b-2 border-black text-black"
-                  : "text-gray-500 hover:text-black"
-              }`}
-            >
-              {tab.replace("-", " ")}
-            </button>
-          ),
-        )}
+        {[
+          "overview",
+          "ab-comparison",
+          "keys",
+          "logs",
+          "retraining",
+          "benchmark",
+        ].map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`px-4 py-2 text-sm font-medium capitalize transition-colors ${
+              activeTab === tab
+                ? "border-b-2 border-black text-black"
+                : "text-gray-500 hover:text-black"
+            }`}
+          >
+            {tab.replace("-", " ")}
+          </button>
+        ))}
       </div>
 
-      {/* ── Tab: Overview ─────────────────────────────────────────────────────── */}
+      {/* Tab: Overview */}
       {activeTab === "overview" && (
         <div className="space-y-6">
           {/* Route breakdown */}
@@ -275,7 +288,7 @@ const CacheDashboard = () => {
         </div>
       )}
 
-      {/* ── Tab: A/B Comparison ───────────────────────────────────────────────── */}
+      {/* Tab: A/B Comparison  */}
       {activeTab === "ab-comparison" && ab && (
         <div className="space-y-6">
           {/* A/B Summary */}
@@ -621,6 +634,133 @@ const CacheDashboard = () => {
               </table>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Tab: Benchmark  */}
+      {activeTab === "benchmark" && (
+        <div className="space-y-6">
+          {!benchmark || !benchmark.results ? (
+            <div className="border rounded-lg p-8 text-center">
+              <h2 className="font-semibold text-lg mb-2">
+                No Benchmark Results Yet
+              </h2>
+              <p className="text-gray-500 text-sm mb-4">
+                Run the benchmark script to compare LRU, LFU and ML strategies.
+              </p>
+              <code className="bg-gray-100 px-3 py-2 rounded text-sm block max-w-md mx-auto">
+                python benchmark.py --data backend/logs/cache_events.jsonl
+              </code>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="font-semibold text-lg">Strategy Comparison</h2>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Generated:{" "}
+                    {new Date(benchmark.generated_at).toLocaleString()}
+                  </p>
+                </div>
+              </div>
+
+              {/* Summary cards per strategy */}
+              <div className="grid grid-cols-3 gap-4">
+                {benchmark.results.map((r) => (
+                  <div
+                    key={r.strategy}
+                    className={`border rounded-lg p-4 ${
+                      r.strategy.includes("ML") ? "border-black" : ""
+                    }`}
+                  >
+                    <h3 className="font-bold text-lg mb-3 flex items-center gap-2">
+                      {r.strategy}
+                      {r.strategy.includes("ML") && (
+                        <span className="text-xs bg-black text-white px-2 py-0.5 rounded-full">
+                          Ours
+                        </span>
+                      )}
+                    </h3>
+                    {[
+                      { label: "Hit Rate", value: `${r.hit_rate}%` },
+                      {
+                        label: "Avg Hit Latency",
+                        value: `${r.avg_hit_latency}ms`,
+                      },
+                      { label: "TTL Accuracy", value: `${r.ttl_accuracy}%` },
+                      {
+                        label: "Peak Cache Size",
+                        value: `${r.peak_cache_size} keys`,
+                      },
+                      {
+                        label: "Latency Speedup",
+                        value: `${r.latency_speedup}x`,
+                      },
+                    ].map((m) => (
+                      <div
+                        key={m.label}
+                        className="flex justify-between py-1 border-b last:border-0"
+                      >
+                        <span className="text-sm text-gray-500">{m.label}</span>
+                        <span className="text-sm font-medium">{m.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+
+              {/* Per-route hit rate comparison */}
+              <div className="border rounded-lg overflow-hidden">
+                <div className="px-4 py-3 bg-gray-50 border-b">
+                  <h2 className="font-semibold">Hit Rate by Route</h2>
+                </div>
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-gray-500">
+                    <tr>
+                      <th className="px-4 py-2 text-left">Route</th>
+                      {benchmark.results.map((r) => (
+                        <th key={r.strategy} className="px-4 py-2 text-left">
+                          {r.strategy}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.keys(benchmark.results[0].by_route)
+                      .sort()
+                      .map((route) => (
+                        <tr key={route} className="border-t">
+                          <td className="px-4 py-2 font-mono text-xs">
+                            {route}
+                          </td>
+                          {benchmark.results.map((r) => {
+                            const hr = r.by_route[route]?.hit_rate ?? 0;
+                            const maxHr = Math.max(
+                              ...benchmark.results.map(
+                                (s) => s.by_route[route]?.hit_rate ?? 0,
+                              ),
+                            );
+                            return (
+                              <td key={r.strategy} className="px-4 py-2">
+                                <span
+                                  className={
+                                    hr === maxHr && hr > 0
+                                      ? "text-green-600 font-medium"
+                                      : ""
+                                  }
+                                >
+                                  {hr}%
+                                </span>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

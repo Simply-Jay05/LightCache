@@ -1,0 +1,430 @@
+{
+  "generated_at": "2026-03-26T21:11:15",
+  "total_records": 232980,
+  "capacity_results": {
+    "10": {
+      "LRU": {
+        "hit_rate": 46.9,
+        "evictions": 0,
+        "ttl_accuracy": 46.9,
+        "by_route": {
+          "products_list": {
+            "hits": 15271,
+            "misses": 49915,
+            "hit_rate": 23.4
+          },
+          "best_seller": {
+            "hits": 32645,
+            "misses": 4364,
+            "hit_rate": 88.2
+          },
+          "product_single": {
+            "hits": 34521,
+            "misses": 50480,
+            "hit_rate": 40.6
+          },
+          "new_arrivals": {
+            "hits": 23182,
+            "misses": 6218,
+            "hit_rate": 78.9
+          },
+          "similar_products": {
+            "hits": 3656,
+            "misses": 12728,
+            "hit_rate": 22.3
+          }
+        }
+      },
+      "LFU": {
+        "hit_rate": 59.38,
+        "evictions": 91,
+        "ttl_accuracy": 59.38,
+        "by_route": {
+          "products_list": {
+            "hits": 17529,
+            "misses": 47657,
+            "hit_rate": 26.9
+          },
+          "best_seller": {
+            "hits": 36635,
+            "misses": 374,
+            "hit_rate": 99.0
+          },
+          "product_single": {
+            "hits": 48144,
+            "misses": 36857,
+            "hit_rate": 56.6
+          },
+          "new_arrivals": {
+            "hits": 29358,
+            "misses": 42,
+            "hit_rate": 99.9
+          },
+          "similar_products": {
+            "hits": 6669,
+            "misses": 9715,
+            "hit_rate": 40.7
+          }
+        }
+      },
+      "ML (LightCache)": {
+        "hit_rate": 46.4,
+        "evictions": 0,
+        "ttl_accuracy": 46.4,
+        "by_route": {
+          "products_list": {
+            "hits": 15277,
+            "misses": 49909,
+            "hit_rate": 23.4
+          },
+          "best_seller": {
+            "hits": 32043,
+            "misses": 4966,
+            "hit_rate": 86.6
+          },
+          "product_single": {
+            "hits": 34084,
+            "misses": 50917,
+            "hit_rate": 40.1
+          },
+          "new_arrivals": {
+            "hits": 23066,
+            "misses": 6334,
+            "hit_rate": 78.5
+          },
+          "similar_products": {
+            "hits": 3637,
+            "misses": 12747,
+            "hit_rate": 22.2
+          }
+        }
+      }
+    },
+    "20": {
+      "LRU": {
+        "hit_rate": 64.18,
+        "evictions": 20,
+        "ttl_accuracy": 64.18,
+        "by_route": {
+          "products_list": {
+            "hits": 27369,
+            "misses": 37817,
+            "hit_rate": 42.0
+          },
+          "best_seller": {
+            "hits": 36721,
+            "misses": 288,
+            "hit_rate": 99.2
+          },
+          "product_single": {
+            "hits": 49750,
+            "misses": 35251,
+            "hit_rate": 58.5
+          },
+          "new_arrivals": {
+            "hits": 28863,
+            "misses": 537,
+            "hit_rate": 98.2
+          },
+          "similar_products": {
+            "hits": 6829,
+            "misses": 9555,
+            "hit_rate": 41.7
+          }
+        }
+      },
+      "LFU": {
+        "hit_rate": 70.18,
+        "evictions": 164,
+        "ttl_accuracy": 70.18,
+        "by_route": {
+          "products_list": {
+            "hits": 31157,
+            "misses": 34029,
+            "hit_rate": 47.8
+          },
+          "best_seller": {
+            "hits": 36963,
+            "misses": 46,
+            "hit_rate": 99.9
+          },
+          "product_single": {
+            "hits": 58189,
+            "misses": 26812,
+            "hit_rate": 68.5
+          },
+          "new_arrivals": {
+            "hits": 29377,
+            "misses": 23,
+            "hit_rate": 99.9
+          },
+          "similar_products": {
+            "hits": 7825,
+            "misses": 8559,
+            "hit_rate": 47.8
+          }
+        }
+      },
+      "ML (LightCache)": {
+        "hit_rate": 64.05,
+        "evictions": 20,
+        "ttl_accuracy": 64.05,
+        "by_route": {
+          "products_list": {
+            "hits": 27329,
+            "misses": 37857,
+            "hit_rate": 41.9
+          },
+          "best_seller": {
+            "hits": 36651,
+            "misses": 358,
+            "hit_rate": 99.0
+          },
+          "product_single": {
+            "hits": 49617,
+            "misses": 35384,
+            "hit_rate": 58.4
+          },
+          "new_arrivals": {
+            "hits": 28815,
+            "misses": 585,
+            "hit_rate": 98.0
+          },
+          "similar_products": {
+            "hits": 6805,
+            "misses": 9579,
+            "hit_rate": 41.5
+          }
+        }
+      }
+    },
+    "30": {
+      "LRU": {
+        "hit_rate": 72.49,
+        "evictions": 38,
+        "ttl_accuracy": 72.49,
+        "by_route": {
+          "products_list": {
+            "hits": 35318,
+            "misses": 29868,
+            "hit_rate": 54.2
+          },
+          "best_seller": {
+            "hits": 36953,
+            "misses": 56,
+            "hit_rate": 99.8
+          },
+          "product_single": {
+            "hits": 58335,
+            "misses": 26666,
+            "hit_rate": 68.6
+          },
+          "new_arrivals": {
+            "hits": 29313,
+            "misses": 87,
+            "hit_rate": 99.7
+          },
+          "similar_products": {
+            "hits": 8973,
+            "misses": 7411,
+            "hit_rate": 54.8
+          }
+        }
+      },
+      "LFU": {
+        "hit_rate": 76.01,
+        "evictions": 231,
+        "ttl_accuracy": 76.01,
+        "by_route": {
+          "products_list": {
+            "hits": 37634,
+            "misses": 27552,
+            "hit_rate": 57.7
+          },
+          "best_seller": {
+            "hits": 36970,
+            "misses": 39,
+            "hit_rate": 99.9
+          },
+          "product_single": {
+            "hits": 62465,
+            "misses": 22536,
+            "hit_rate": 73.5
+          },
+          "new_arrivals": {
+            "hits": 29377,
+            "misses": 23,
+            "hit_rate": 99.9
+          },
+          "similar_products": {
+            "hits": 10651,
+            "misses": 5733,
+            "hit_rate": 65.0
+          }
+        }
+      },
+      "ML (LightCache)": {
+        "hit_rate": 72.43,
+        "evictions": 37,
+        "ttl_accuracy": 72.43,
+        "by_route": {
+          "products_list": {
+            "hits": 35260,
+            "misses": 29926,
+            "hit_rate": 54.1
+          },
+          "best_seller": {
+            "hits": 36946,
+            "misses": 63,
+            "hit_rate": 99.8
+          },
+          "product_single": {
+            "hits": 58280,
+            "misses": 26721,
+            "hit_rate": 68.6
+          },
+          "new_arrivals": {
+            "hits": 29308,
+            "misses": 92,
+            "hit_rate": 99.7
+          },
+          "similar_products": {
+            "hits": 8954,
+            "misses": 7430,
+            "hit_rate": 54.7
+          }
+        }
+      }
+    },
+    "50": {
+      "LRU": {
+        "hit_rate": 82.15,
+        "evictions": 64,
+        "ttl_accuracy": 82.15,
+        "by_route": {
+          "products_list": {
+            "hits": 44554,
+            "misses": 20632,
+            "hit_rate": 68.3
+          },
+          "best_seller": {
+            "hits": 36977,
+            "misses": 32,
+            "hit_rate": 99.9
+          },
+          "product_single": {
+            "hits": 69154,
+            "misses": 15847,
+            "hit_rate": 81.4
+          },
+          "new_arrivals": {
+            "hits": 29375,
+            "misses": 25,
+            "hit_rate": 99.9
+          },
+          "similar_products": {
+            "hits": 11344,
+            "misses": 5040,
+            "hit_rate": 69.2
+          }
+        }
+      },
+      "LFU": {
+        "hit_rate": 84.95,
+        "evictions": 356,
+        "ttl_accuracy": 84.95,
+        "by_route": {
+          "products_list": {
+            "hits": 44374,
+            "misses": 20812,
+            "hit_rate": 68.1
+          },
+          "best_seller": {
+            "hits": 36974,
+            "misses": 35,
+            "hit_rate": 99.9
+          },
+          "product_single": {
+            "hits": 75073,
+            "misses": 9928,
+            "hit_rate": 88.3
+          },
+          "new_arrivals": {
+            "hits": 29379,
+            "misses": 21,
+            "hit_rate": 99.9
+          },
+          "similar_products": {
+            "hits": 12118,
+            "misses": 4266,
+            "hit_rate": 74.0
+          }
+        }
+      },
+      "ML (LightCache)": {
+        "hit_rate": 82.13,
+        "evictions": 64,
+        "ttl_accuracy": 82.13,
+        "by_route": {
+          "products_list": {
+            "hits": 44520,
+            "misses": 20666,
+            "hit_rate": 68.3
+          },
+          "best_seller": {
+            "hits": 36977,
+            "misses": 32,
+            "hit_rate": 99.9
+          },
+          "product_single": {
+            "hits": 69137,
+            "misses": 15864,
+            "hit_rate": 81.3
+          },
+          "new_arrivals": {
+            "hits": 29375,
+            "misses": 25,
+            "hit_rate": 99.9
+          },
+          "similar_products": {
+            "hits": 11336,
+            "misses": 5048,
+            "hit_rate": 69.2
+          }
+        }
+      }
+    }
+  },
+  "ttl_analysis": {
+    "similar_products": {
+      "fixed_avg_ttl": 600.0,
+      "ml_avg_ttl": 600.0,
+      "fixed_waste_pct": 0.9,
+      "ml_waste_pct": 0.9
+    },
+    "new_arrivals": {
+      "fixed_avg_ttl": 180.0,
+      "ml_avg_ttl": 180.0,
+      "fixed_waste_pct": 0.1,
+      "ml_waste_pct": 0.1
+    },
+    "best_seller": {
+      "fixed_avg_ttl": 120.0,
+      "ml_avg_ttl": 120.0,
+      "fixed_waste_pct": 0.1,
+      "ml_waste_pct": 0.1
+    },
+    "products_list": {
+      "fixed_avg_ttl": 300.0,
+      "ml_avg_ttl": 300.0,
+      "fixed_waste_pct": 2.2,
+      "ml_waste_pct": 2.2
+    },
+    "product_single": {
+      "fixed_avg_ttl": 600.0,
+      "ml_avg_ttl": 600.0,
+      "fixed_waste_pct": 0.2,
+      "ml_waste_pct": 0.2
+    }
+  }
+}
