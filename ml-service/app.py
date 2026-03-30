@@ -152,51 +152,71 @@ BENCHMARK_LOGS_PATH  = BASE_DIR / "logs" / "benchmark_results.json"
 BENCHMARK_DATA_PATH  = BASE_DIR / "logs" / "cache_events.jsonl"
 
 
-def run_benchmark_if_needed():
+def _run_benchmark_once():
     """
-    Run benchmark.py simulation and save results.
-    - Always runs on startup so the dashboard always has results.
-    - Copies output to /app/logs/ (shared Docker volume) so the backend
-      can serve it via GET /api/cache/benchmark.
+    Execute benchmark.py and copy results to the shared logs volume.
+    Returns True on success, False on any failure.
     """
     import subprocess
     import shutil
 
-    # Ensure logs dir exists (needed in Docker before first log consumer flush)
     BENCHMARK_LOGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     BENCHMARK_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-    # Decide which data file to use
-    if BENCHMARK_DATA_PATH.exists():
-        data_arg = str(BENCHMARK_DATA_PATH)
-        print(f"Benchmark: using live log data ({BENCHMARK_DATA_PATH})")
-    else:
-        # No live data yet — skip benchmark (will run after first log flush)
-        print("Benchmark: no log data yet, skipping (will auto-run after data is collected)")
-        return
 
     try:
         print("Running LRU/LFU/LightCache benchmark simulation...")
         result = subprocess.run(
-            ["python", str(BASE_DIR / "benchmark.py"),
-             "--data", data_arg,
-             "--output", str(BENCHMARK_MODEL_PATH)],
-            capture_output=True, text=True, timeout=120
+            [
+                "python", str(BASE_DIR / "benchmark.py"),
+                "--data",   str(BENCHMARK_DATA_PATH),
+                "--output", str(BENCHMARK_MODEL_PATH),
+            ],
+            capture_output=True, text=True, timeout=120,
         )
         if result.returncode == 0:
-            print("Benchmark complete.")
-            # Copy to shared volume so backend can read it
             shutil.copy2(BENCHMARK_MODEL_PATH, BENCHMARK_LOGS_PATH)
-            print(f"Benchmark results copied to shared volume: {BENCHMARK_LOGS_PATH}")
+            print(f"Benchmark complete — results saved to {BENCHMARK_LOGS_PATH}")
+            return True
         else:
-            print(f"Benchmark exited with code {result.returncode}: {result.stderr[:200]}")
+            print(f"Benchmark failed (exit {result.returncode}): {result.stderr[:300]}")
     except subprocess.TimeoutExpired:
-        print("Benchmark timed out (>120s) — skipping")
+        print("Benchmark timed out (>120s) — will retry on next poll")
     except Exception as e:
-        print(f"Benchmark failed (non-critical): {e}")
+        print(f"Benchmark error (non-critical): {e}")
+    return False
 
 
-# Lifespan — runs warmup + benchmark before accepting requests
+def run_benchmark_watcher():
+    """
+    Background thread: polls every 60 s for cache_events.jsonl (written by
+    logConsumer.js), runs benchmark.py as soon as data is available, then
+    refreshes hourly so the dashboard always shows up-to-date results.
+
+    Why polling?
+    The ml-service starts before the backend.  logConsumer.js needs roughly
+    5 minutes of live traffic before it flushes its first JSONL batch.
+    A one-shot check at startup always misses this window — which is why the
+    dashboard was stuck on "Benchmark Running..." indefinitely.
+    """
+    POLL_INTERVAL    = 60      # seconds between "is data ready?" checks
+    REFRESH_INTERVAL = 3600    # re-run every hour once data exists
+
+    print("Benchmark watcher started — polling for log data every 60 s ...")
+    last_run_at = 0.0
+
+    while True:
+        now = time.time()
+        if BENCHMARK_DATA_PATH.exists():
+            if now - last_run_at >= REFRESH_INTERVAL:
+                print(f"Benchmark watcher: log data detected, running benchmark ...")
+                if _run_benchmark_once():
+                    last_run_at = time.time()
+        else:
+            print("Benchmark watcher: cache_events.jsonl not yet available, waiting ...")
+        time.sleep(POLL_INTERVAL)
+
+
+# Lifespan — runs warmup + starts benchmark watcher before accepting requests
 @asynccontextmanager
 async def lifespan(app):
     # 1. Model warmup
@@ -216,10 +236,12 @@ async def lifespan(app):
     except Exception as e:
         print(f"Warmup failed (non-critical): {e}")
 
-    # 2. Auto-run benchmark (non-blocking — runs in background thread)
+    # 2. Start benchmark watcher (non-blocking background thread).
+    #    Waits for cache_events.jsonl to appear (written by logConsumer.js),
+    #    then runs benchmark.py automatically — no manual docker exec needed.
     import threading
-    benchmark_thread = threading.Thread(target=run_benchmark_if_needed, daemon=True)
-    benchmark_thread.start()
+    watcher = threading.Thread(target=run_benchmark_watcher, daemon=True)
+    watcher.start()
 
     yield  # app runs here until shutdown
 
