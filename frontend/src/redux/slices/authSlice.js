@@ -1,6 +1,31 @@
 import { createSlice, createAsyncThunk } from "@reduxjs/toolkit";
 import axios from "axios";
 
+// Global 401 interceptor - Catches any expired/invalid JWT response across the entire app and logs the user out automatically.
+// This use a lazy-dispatch pattern: the store cannot be imported here (circular
+// dependency), so App.jsx calls setAuthDispatch(store.dispatch) once on mount.
+let _dispatch = null;
+export const setAuthDispatch = (dispatch) => {
+  _dispatch = dispatch;
+};
+
+axios.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (
+      error.response?.status === 401 &&
+      _dispatch !== null &&
+      // Never redirect on login/register calls themselves
+      !error.config?.url?.includes("/api/users/login") &&
+      !error.config?.url?.includes("/api/users/register")
+    ) {
+      _dispatch(logoutAction());
+      window.location.href = "/login";
+    }
+    return Promise.reject(error);
+  },
+);
+
 // Retrieve user info and token from localStorage if available
 const userFromStorage = localStorage.getItem("userInfo")
   ? JSON.parse(localStorage.getItem("userInfo"))
@@ -38,7 +63,7 @@ export const loginUser = createAsyncThunk(
   },
 );
 
-// Async Thunk for User Login
+// Async Thunk for User Register
 export const registerUser = createAsyncThunk(
   "auth/registerUser",
   async (userData, { rejectWithValue }) => {
@@ -104,4 +129,8 @@ const authSlice = createSlice({
 });
 
 export const { logout, generateNewGuestId } = authSlice.actions;
+
+// Internal alias used by the 401 interceptor (defined before slice, referenced after)
+const logoutAction = authSlice.actions.logout;
+
 export default authSlice.reducer;

@@ -19,9 +19,13 @@ import EditProductPage from "./components/Admin/EditProductPage";
 import OrderManagement from "./components/Admin/OrderManagement";
 
 import { Provider } from "react-redux";
+import { setAuthDispatch } from "./redux/slices/authSlice";
 import store from "./redux/store";
 import ProtectedRoute from "./components/Common/ProtectedRoute";
 import CacheDashboard from "./components/Admin/CacheDashboard";
+
+// Wire the global 401 interceptor to Redux dispatch at app boot. This must happen before any axios request fires.
+setAuthDispatch(store.dispatch);
 
 const App = () => {
   return (

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-03-26T21:11:15",
+  "generated_at": "2026-03-30T17:33:42",
   "total_records": 232980,
   "capacity_results": {
     "10": {
@@ -396,12 +396,6 @@
     }
   },
   "ttl_analysis": {
-    "similar_products": {
-      "fixed_avg_ttl": 600.0,
-      "ml_avg_ttl": 600.0,
-      "fixed_waste_pct": 0.9,
-      "ml_waste_pct": 0.9
-    },
     "new_arrivals": {
       "fixed_avg_ttl": 180.0,
       "ml_avg_ttl": 180.0,
@@ -414,17 +408,23 @@
       "fixed_waste_pct": 0.1,
       "ml_waste_pct": 0.1
     },
+    "product_single": {
+      "fixed_avg_ttl": 600.0,
+      "ml_avg_ttl": 600.0,
+      "fixed_waste_pct": 0.2,
+      "ml_waste_pct": 0.2
+    },
     "products_list": {
       "fixed_avg_ttl": 300.0,
       "ml_avg_ttl": 300.0,
       "fixed_waste_pct": 2.2,
       "ml_waste_pct": 2.2
     },
-    "product_single": {
+    "similar_products": {
       "fixed_avg_ttl": 600.0,
       "ml_avg_ttl": 600.0,
-      "fixed_waste_pct": 0.2,
-      "ml_waste_pct": 0.2
+      "fixed_waste_pct": 0.9,
+      "ml_waste_pct": 0.9
     }
   }
 }

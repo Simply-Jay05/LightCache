@@ -1,13 +1,14 @@
 import { useEffect, useState, useCallback } from "react";
 import axios from "axios";
-
-const authHeaders = () => ({
-  headers: { Authorization: `Bearer ${localStorage.getItem("userToken")}` },
-});
+import { useDispatch } from "react-redux";
+import { logout } from "../../redux/slices/authSlice";
+import { useNavigate } from "react-router-dom";
 
 const CacheDashboard = () => {
+  const dispatch = useDispatch();
+  const navigate = useNavigate();
+
   const [stats, setStats] = useState(null);
-  const [ab, setAb] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState("overview");
@@ -15,48 +16,66 @@ const CacheDashboard = () => {
   const [retrainHistory, setRetrainHistory] = useState(null);
   const [benchmark, setBenchmark] = useState(null);
 
+  // Auth helpers
+  const authHeaders = useCallback(
+    () => ({
+      headers: { Authorization: `Bearer ${localStorage.getItem("userToken")}` },
+    }),
+    [],
+  );
+
+  const handleUnauthorized = useCallback(() => {
+    dispatch(logout());
+    navigate("/login", { replace: true });
+  }, [dispatch, navigate]);
+
+  const authGet = useCallback(
+    async (url) => {
+      try {
+        return await axios.get(url, authHeaders());
+      } catch (err) {
+        if (err.response?.status === 401) {
+          handleUnauthorized();
+          throw err;
+        }
+        throw err;
+      }
+    },
+    [authHeaders, handleUnauthorized],
+  );
+
+  // Data fetching
   const fetchData = useCallback(async () => {
     try {
       setError(null);
-      const [statsRes, abRes, retrainRes, benchmarkRes] = await Promise.all([
-        axios.get(
-          `${import.meta.env.VITE_BACKEND_URL}/api/cache/stats`,
-          authHeaders(),
-        ),
-        axios.get(
-          `${import.meta.env.VITE_BACKEND_URL}/api/cache/ab`,
-          authHeaders(),
-        ),
-        axios
-          .get(
-            `${import.meta.env.VITE_BACKEND_URL}/api/ml/retrain-history`,
-            authHeaders(),
-          )
-          .catch(() => ({ data: { history: [] } })),
-        axios
-          .get(
-            `${import.meta.env.VITE_BACKEND_URL}/api/cache/benchmark`,
-            authHeaders(),
-          )
-          .catch(() => ({ data: { results: null } })),
+      const BASE = import.meta.env.VITE_BACKEND_URL;
+
+      const [statsRes, retrainRes, benchmarkRes] = await Promise.all([
+        authGet(`${BASE}/api/cache/stats`),
+        authGet(`${BASE}/api/ml/retrain-history`).catch(() => ({
+          data: { history: [] },
+        })),
+        authGet(`${BASE}/api/cache/benchmark`).catch(() => ({ data: null })),
       ]);
+
       setStats(statsRes.data);
-      setAb(abRes.data);
       setRetrainHistory(retrainRes.data);
       setBenchmark(benchmarkRes?.data || null);
     } catch (err) {
+      if (err.response?.status === 401) return;
       setError("Failed to load cache data. Make sure Redis is running.");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [authGet]);
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 15000); // auto-refresh every 15s
+    const interval = setInterval(fetchData, 15000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
+  // Actions
   const handleFlush = async () => {
     if (!window.confirm("Flush all product cache keys?")) return;
     setFlushing(true);
@@ -67,7 +86,8 @@ const CacheDashboard = () => {
       );
       alert(res.data.message);
       fetchData();
-    } catch {
+    } catch (err) {
+      if (err.response?.status === 401) return handleUnauthorized();
       alert("Flush failed");
     } finally {
       setFlushing(false);
@@ -88,11 +108,13 @@ const CacheDashboard = () => {
       );
       alert(res.data.message);
       fetchData();
-    } catch {
+    } catch (err) {
+      if (err.response?.status === 401) return handleUnauthorized();
       alert("Flush logs failed");
     }
   };
 
+  // Loading / error states
   if (loading)
     return (
       <div className="max-w-7xl mx-auto p-6">
@@ -126,6 +148,30 @@ const CacheDashboard = () => {
     stats;
   const maxHour = Math.max(...by_hour);
 
+  // Benchmark data helpers
+  const CAPACITIES = benchmark?.capacity_results
+    ? Object.keys(benchmark.capacity_results)
+        .map(Number)
+        .sort((a, b) => a - b)
+    : [];
+
+  const STRATEGIES = benchmark?.capacity_results?.[CAPACITIES[0]]
+    ? Object.keys(benchmark.capacity_results[String(CAPACITIES[0])])
+    : [];
+
+  const SUMMARY_CAP = "50";
+  const summaryData = benchmark?.capacity_results?.[SUMMARY_CAP];
+
+  const strategyStyle = (name) => {
+    if (name === "LFU")
+      return { border: "border-blue-400", badge: "bg-blue-100 text-blue-800" };
+    if (name === "LRU")
+      return { border: "border-gray-300", badge: "bg-gray-100 text-gray-700" };
+    if (name.includes("ML"))
+      return { border: "border-black", badge: "bg-black text-white" };
+    return { border: "border-gray-200", badge: "bg-gray-100 text-gray-600" };
+  };
+
   return (
     <div className="max-w-7xl mx-auto p-6">
       {/* Header */}
@@ -158,7 +204,7 @@ const CacheDashboard = () => {
       </div>
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
         {[
           {
             label: "Total Requests",
@@ -178,7 +224,6 @@ const CacheDashboard = () => {
           </div>
         ))}
       </div>
-
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         {[
           { label: "Hits", value: summary.hits.toLocaleString() },
@@ -193,16 +238,9 @@ const CacheDashboard = () => {
         ))}
       </div>
 
-      {/* Tabs */}
+      {/* Tabs — removed A/B tab, benchmark moved to second position */}
       <div className="flex gap-1 mb-6 border-b">
-        {[
-          "overview",
-          "ab-comparison",
-          "keys",
-          "logs",
-          "retraining",
-          "benchmark",
-        ].map((tab) => (
+        {["overview", "benchmark", "keys", "logs", "retraining"].map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -212,15 +250,14 @@ const CacheDashboard = () => {
                 : "text-gray-500 hover:text-black"
             }`}
           >
-            {tab.replace("-", " ")}
+            {tab}
           </button>
         ))}
       </div>
 
-      {/* Tab: Overview */}
+      {/* Overview */}
       {activeTab === "overview" && (
         <div className="space-y-6">
-          {/* Route breakdown */}
           <div className="border rounded-lg overflow-hidden">
             <div className="px-4 py-3 bg-gray-50 border-b">
               <h2 className="font-semibold">Performance by Route</h2>
@@ -260,8 +297,6 @@ const CacheDashboard = () => {
               </tbody>
             </table>
           </div>
-
-          {/* Hourly traffic */}
           <div className="border rounded-lg p-4">
             <h2 className="font-semibold mb-4">Requests by Hour of Day</h2>
             <div className="flex items-end gap-1 h-24">
@@ -288,108 +323,273 @@ const CacheDashboard = () => {
         </div>
       )}
 
-      {/* Tab: A/B Comparison  */}
-      {activeTab === "ab-comparison" && ab && (
+      {/* Benchmark */}
+      {activeTab === "benchmark" && (
         <div className="space-y-6">
-          {/* A/B Summary */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {[
-              {
-                label: "Total Log Entries",
-                value: ab.summary.total_entries.toLocaleString(),
-              },
-              {
-                label: "ML-Predicted TTL",
-                value: ab.summary.ml_entries.toLocaleString(),
-              },
-              {
-                label: "Fixed TTL",
-                value: ab.summary.fallback_entries.toLocaleString(),
-              },
-              { label: "ML Coverage", value: ab.summary.ml_coverage },
-            ].map((card) => (
-              <div key={card.label} className="p-4 border rounded-lg">
-                <p className="text-sm text-gray-500">{card.label}</p>
-                <p className="text-2xl font-bold mt-1">{card.value}</p>
-              </div>
-            ))}
-          </div>
-
-          {/* Per-route A/B table */}
-          <div className="border rounded-lg overflow-hidden">
-            <div className="px-4 py-3 bg-gray-50 border-b">
-              <h2 className="font-semibold">ML vs Fixed TTL — Per Route</h2>
-              <p className="text-xs text-gray-500 mt-1">
-                TTL Difference = ML avg TTL minus fixed TTL. Positive = ML
-                caches longer.
+          {!benchmark?.capacity_results ? (
+            <div className="border rounded-lg p-10 text-center">
+              <div className="text-4xl mb-3">📊</div>
+              <h2 className="font-semibold text-lg mb-2">Benchmark Running…</h2>
+              <p className="text-gray-500 text-sm mb-4 max-w-md mx-auto">
+                The LRU / LFU / LightCache simulation runs automatically on
+                startup once log data is available. Click Refresh in a few
+                moments.
               </p>
+              <code className="bg-gray-100 px-3 py-2 rounded text-xs block max-w-lg mx-auto mt-2">
+                docker compose exec ml-service python benchmark.py
+              </code>
             </div>
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-gray-500">
-                <tr>
-                  {[
-                    "Route",
-                    "Fixed TTL",
-                    "ML Avg TTL",
-                    "Difference",
-                    "Fixed Hit Rate",
-                    "ML Hit Rate",
-                  ].map((h) => (
-                    <th key={h} className="px-4 py-2 text-left">
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {ab.by_route.map((r) => (
-                  <tr key={r.route} className="border-t">
-                    <td className="px-4 py-2 font-mono text-xs">{r.route}</td>
-                    <td className="px-4 py-2">{r.fixed_ttl}s</td>
-                    <td className="px-4 py-2">
-                      {r.ml_avg_ttl !== null ? `${r.ml_avg_ttl}s` : "—"}
-                    </td>
-                    <td className="px-4 py-2">
-                      {r.ttl_difference !== null ? (
-                        <span
-                          className={
-                            r.ttl_difference > 0
-                              ? "text-green-600"
-                              : "text-red-500"
-                          }
-                        >
-                          {r.ttl_difference > 0 ? "+" : ""}
-                          {r.ttl_difference}s
-                        </span>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                    <td className="px-4 py-2">{r.fixed_hit_rate}%</td>
-                    <td className="px-4 py-2">
-                      <span
-                        className={
-                          parseFloat(r.ml_hit_rate) >
-                          parseFloat(r.fixed_hit_rate)
-                            ? "text-green-600 font-medium"
-                            : ""
-                        }
+          ) : (
+            <>
+              <div>
+                <h2 className="font-semibold text-lg">
+                  Eviction Strategy Comparison — LRU vs LFU vs LightCache (ML)
+                </h2>
+                <p className="text-xs text-gray-500 mt-1">
+                  Trace-driven simulation on{" "}
+                  {benchmark.total_records?.toLocaleString()} real cache events
+                  · Generated{" "}
+                  {benchmark.generated_at
+                    ? new Date(benchmark.generated_at).toLocaleString()
+                    : "—"}
+                </p>
+              </div>
+
+              {/* Strategy summary cards at capacity=50 */}
+              {summaryData && (
+                <div
+                  className="grid gap-4"
+                  style={{
+                    gridTemplateColumns: `repeat(${STRATEGIES.length}, minmax(0,1fr))`,
+                  }}
+                >
+                  {STRATEGIES.map((name) => {
+                    const s = strategyStyle(name);
+                    const d = summaryData[name];
+                    const allRates = STRATEGIES.map(
+                      (n) => summaryData[n]?.hit_rate ?? 0,
+                    );
+                    const best = Math.max(...allRates) === d?.hit_rate;
+                    return (
+                      <div
+                        key={name}
+                        className={`border-2 ${s.border} rounded-lg p-5`}
                       >
-                        {r.ml_hit_rate}%
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                        <div className="flex items-center gap-2 mb-3">
+                          <h3 className="font-bold text-base">{name}</h3>
+                          <span
+                            className={`text-xs px-2 py-0.5 rounded-full ${s.badge}`}
+                          >
+                            {name.includes("ML") ? "Our System" : name}
+                          </span>
+                        </div>
+                        <div className="space-y-2">
+                          <div className="flex justify-between border-b pb-1">
+                            <span className="text-sm text-gray-500">
+                              Hit Rate
+                            </span>
+                            <span
+                              className={`text-sm font-bold ${best ? "text-green-600" : ""}`}
+                            >
+                              {d?.hit_rate}%
+                            </span>
+                          </div>
+                          <div className="flex justify-between border-b pb-1">
+                            <span className="text-sm text-gray-500">
+                              Evictions
+                            </span>
+                            <span className="text-sm font-medium">
+                              {d?.evictions?.toLocaleString()}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-sm text-gray-500">
+                              TTL Accuracy
+                            </span>
+                            <span className="text-sm font-medium">
+                              {d?.ttl_accuracy}%
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Hit rate across capacities */}
+              <div className="border rounded-lg overflow-hidden">
+                <div className="px-4 py-3 bg-gray-50 border-b">
+                  <h2 className="font-semibold">Hit Rate by Cache Capacity</h2>
+                  <p className="text-xs text-gray-500 mt-1">
+                    LightCache uses ML-predicted TTL — holding high-value items
+                    in cache longer.
+                  </p>
+                </div>
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-gray-500">
+                    <tr>
+                      <th className="px-4 py-2 text-left">Capacity (keys)</th>
+                      {STRATEGIES.map((s) => (
+                        <th key={s} className="px-4 py-2 text-left">
+                          {s}
+                        </th>
+                      ))}
+                      <th className="px-4 py-2 text-left">ML vs LFU Δ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {CAPACITIES.map((cap) => {
+                      const row = benchmark.capacity_results[String(cap)];
+                      const mlRate = row["ML (LightCache)"]?.hit_rate ?? 0;
+                      const lfuRate = row["LFU"]?.hit_rate ?? 0;
+                      const diff = (mlRate - lfuRate).toFixed(2);
+                      return (
+                        <tr key={cap} className="border-t">
+                          <td className="px-4 py-2 font-medium">{cap}</td>
+                          {STRATEGIES.map((name) => {
+                            const hr = row[name]?.hit_rate ?? 0;
+                            const best = Math.max(
+                              ...STRATEGIES.map((s) => row[s]?.hit_rate ?? 0),
+                            );
+                            return (
+                              <td key={name} className="px-4 py-2">
+                                <span
+                                  className={
+                                    hr === best
+                                      ? "text-green-600 font-bold"
+                                      : ""
+                                  }
+                                >
+                                  {hr}%
+                                </span>
+                              </td>
+                            );
+                          })}
+                          <td className="px-4 py-2">
+                            <span
+                              className={
+                                parseFloat(diff) >= 0
+                                  ? "text-green-600 font-medium"
+                                  : "text-red-500"
+                              }
+                            >
+                              {parseFloat(diff) >= 0 ? "+" : ""}
+                              {diff}%
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Per-route hit rate at cap=50 */}
+              {summaryData && (
+                <div className="border rounded-lg overflow-hidden">
+                  <div className="px-4 py-3 bg-gray-50 border-b">
+                    <h2 className="font-semibold">
+                      Hit Rate by Route (capacity = 50 keys)
+                    </h2>
+                  </div>
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50 text-gray-500">
+                      <tr>
+                        <th className="px-4 py-2 text-left">Route</th>
+                        {STRATEGIES.map((s) => (
+                          <th key={s} className="px-4 py-2 text-left">
+                            {s}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.keys(summaryData[STRATEGIES[0]]?.by_route ?? {})
+                        .sort()
+                        .map((route) => (
+                          <tr key={route} className="border-t">
+                            <td className="px-4 py-2 font-mono text-xs">
+                              {route}
+                            </td>
+                            {STRATEGIES.map((name) => {
+                              const hr =
+                                summaryData[name]?.by_route?.[route]
+                                  ?.hit_rate ?? 0;
+                              const best = Math.max(
+                                ...STRATEGIES.map(
+                                  (s) =>
+                                    summaryData[s]?.by_route?.[route]
+                                      ?.hit_rate ?? 0,
+                                ),
+                              );
+                              return (
+                                <td key={name} className="px-4 py-2">
+                                  <span
+                                    className={
+                                      hr === best && hr > 0
+                                        ? "text-green-600 font-medium"
+                                        : ""
+                                    }
+                                  >
+                                    {hr}%
+                                  </span>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Evictions table */}
+              <div className="border rounded-lg overflow-hidden">
+                <div className="px-4 py-3 bg-gray-50 border-b">
+                  <h2 className="font-semibold">Evictions by Capacity</h2>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Evictions occur when the cache is full. LFU evicts
+                    least-frequently-used; LRU evicts least-recently-used;
+                    LightCache uses ML eviction scores.
+                  </p>
+                </div>
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-gray-500">
+                    <tr>
+                      <th className="px-4 py-2 text-left">Capacity</th>
+                      {STRATEGIES.map((s) => (
+                        <th key={s} className="px-4 py-2 text-left">
+                          {s} Evictions
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {CAPACITIES.map((cap) => {
+                      const row = benchmark.capacity_results[String(cap)];
+                      return (
+                        <tr key={cap} className="border-t">
+                          <td className="px-4 py-2 font-medium">{cap}</td>
+                          {STRATEGIES.map((name) => (
+                            <td key={name} className="px-4 py-2">
+                              {(row[name]?.evictions ?? 0).toLocaleString()}
+                            </td>
+                          ))}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
         </div>
       )}
 
-      {/* ── Tab: Keys ─────────────────────────────────────────────────────────── */}
+      {/* ── Keys ─────────────────────────────────────────────────────────────── */}
       {activeTab === "keys" && (
         <div className="space-y-6">
-          {/* Top accessed keys */}
           <div className="border rounded-lg overflow-hidden">
             <div className="px-4 py-3 bg-gray-50 border-b">
               <h2 className="font-semibold">Most Accessed Cache Keys</h2>
@@ -430,8 +630,6 @@ const CacheDashboard = () => {
               </tbody>
             </table>
           </div>
-
-          {/* Live Redis keys with TTL */}
           <div className="border rounded-lg overflow-hidden">
             <div className="px-4 py-3 bg-gray-50 border-b">
               <h2 className="font-semibold">Live Redis Keys with TTL</h2>
@@ -467,7 +665,7 @@ const CacheDashboard = () => {
         </div>
       )}
 
-      {/* ── Tab: Logs ─────────────────────────────────────────────────────────── */}
+      {/* Logs */}
       {activeTab === "logs" && (
         <div className="border rounded-lg overflow-hidden">
           <div className="px-4 py-3 bg-gray-50 border-b">
@@ -493,11 +691,7 @@ const CacheDashboard = () => {
                 <tr key={i} className="border-t">
                   <td className="px-4 py-2">
                     <span
-                      className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                        log.event_type === "HIT"
-                          ? "bg-green-100 text-green-700"
-                          : "bg-red-100 text-red-700"
-                      }`}
+                      className={`text-xs font-medium px-2 py-0.5 rounded-full ${log.event_type === "HIT" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}
                     >
                       {log.event_type}
                     </span>
@@ -531,39 +725,34 @@ const CacheDashboard = () => {
         </div>
       )}
 
-      {/* ── Tab: Retraining ───────────────────────────────────────────────── */}
+      {/* Retraining */}
       {activeTab === "retraining" && (
         <div className="space-y-6">
-          {/* Current model info */}
-          {stats && (
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-              {[
-                {
-                  label: "Model Trained At",
-                  value: retrainHistory?.latest?.retrained_at
-                    ? new Date(
-                        retrainHistory.latest.retrained_at,
-                      ).toLocaleString()
-                    : "Initial model",
-                },
-                {
-                  label: "Total Retrains",
-                  value: retrainHistory?.total_retrains ?? 0,
-                },
-                {
-                  label: "Latest TTL R²",
-                  value: retrainHistory?.latest?.ttl_r2 ?? "—",
-                },
-              ].map((card) => (
-                <div key={card.label} className="p-4 border rounded-lg">
-                  <p className="text-sm text-gray-500">{card.label}</p>
-                  <p className="text-xl font-bold mt-1">{card.value}</p>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Retraining history table */}
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+            {[
+              {
+                label: "Model Trained At",
+                value: retrainHistory?.latest?.retrained_at
+                  ? new Date(
+                      retrainHistory.latest.retrained_at,
+                    ).toLocaleString()
+                  : "Initial model",
+              },
+              {
+                label: "Total Retrains",
+                value: retrainHistory?.total_retrains ?? 0,
+              },
+              {
+                label: "Latest TTL R²",
+                value: retrainHistory?.latest?.ttl_r2 ?? "—",
+              },
+            ].map((card) => (
+              <div key={card.label} className="p-4 border rounded-lg">
+                <p className="text-sm text-gray-500">{card.label}</p>
+                <p className="text-xl font-bold mt-1">{card.value}</p>
+              </div>
+            ))}
+          </div>
           <div className="border rounded-lg overflow-hidden">
             <div className="px-4 py-3 bg-gray-50 border-b">
               <h2 className="font-semibold">Retraining History</h2>
@@ -634,133 +823,6 @@ const CacheDashboard = () => {
               </table>
             )}
           </div>
-        </div>
-      )}
-
-      {/* Tab: Benchmark  */}
-      {activeTab === "benchmark" && (
-        <div className="space-y-6">
-          {!benchmark || !benchmark.results ? (
-            <div className="border rounded-lg p-8 text-center">
-              <h2 className="font-semibold text-lg mb-2">
-                No Benchmark Results Yet
-              </h2>
-              <p className="text-gray-500 text-sm mb-4">
-                Run the benchmark script to compare LRU, LFU and ML strategies.
-              </p>
-              <code className="bg-gray-100 px-3 py-2 rounded text-sm block max-w-md mx-auto">
-                python benchmark.py --data backend/logs/cache_events.jsonl
-              </code>
-            </div>
-          ) : (
-            <>
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="font-semibold text-lg">Strategy Comparison</h2>
-                  <p className="text-xs text-gray-500 mt-1">
-                    Generated:{" "}
-                    {new Date(benchmark.generated_at).toLocaleString()}
-                  </p>
-                </div>
-              </div>
-
-              {/* Summary cards per strategy */}
-              <div className="grid grid-cols-3 gap-4">
-                {benchmark.results.map((r) => (
-                  <div
-                    key={r.strategy}
-                    className={`border rounded-lg p-4 ${
-                      r.strategy.includes("ML") ? "border-black" : ""
-                    }`}
-                  >
-                    <h3 className="font-bold text-lg mb-3 flex items-center gap-2">
-                      {r.strategy}
-                      {r.strategy.includes("ML") && (
-                        <span className="text-xs bg-black text-white px-2 py-0.5 rounded-full">
-                          Ours
-                        </span>
-                      )}
-                    </h3>
-                    {[
-                      { label: "Hit Rate", value: `${r.hit_rate}%` },
-                      {
-                        label: "Avg Hit Latency",
-                        value: `${r.avg_hit_latency}ms`,
-                      },
-                      { label: "TTL Accuracy", value: `${r.ttl_accuracy}%` },
-                      {
-                        label: "Peak Cache Size",
-                        value: `${r.peak_cache_size} keys`,
-                      },
-                      {
-                        label: "Latency Speedup",
-                        value: `${r.latency_speedup}x`,
-                      },
-                    ].map((m) => (
-                      <div
-                        key={m.label}
-                        className="flex justify-between py-1 border-b last:border-0"
-                      >
-                        <span className="text-sm text-gray-500">{m.label}</span>
-                        <span className="text-sm font-medium">{m.value}</span>
-                      </div>
-                    ))}
-                  </div>
-                ))}
-              </div>
-
-              {/* Per-route hit rate comparison */}
-              <div className="border rounded-lg overflow-hidden">
-                <div className="px-4 py-3 bg-gray-50 border-b">
-                  <h2 className="font-semibold">Hit Rate by Route</h2>
-                </div>
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 text-gray-500">
-                    <tr>
-                      <th className="px-4 py-2 text-left">Route</th>
-                      {benchmark.results.map((r) => (
-                        <th key={r.strategy} className="px-4 py-2 text-left">
-                          {r.strategy}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Object.keys(benchmark.results[0].by_route)
-                      .sort()
-                      .map((route) => (
-                        <tr key={route} className="border-t">
-                          <td className="px-4 py-2 font-mono text-xs">
-                            {route}
-                          </td>
-                          {benchmark.results.map((r) => {
-                            const hr = r.by_route[route]?.hit_rate ?? 0;
-                            const maxHr = Math.max(
-                              ...benchmark.results.map(
-                                (s) => s.by_route[route]?.hit_rate ?? 0,
-                              ),
-                            );
-                            return (
-                              <td key={r.strategy} className="px-4 py-2">
-                                <span
-                                  className={
-                                    hr === maxHr && hr > 0
-                                      ? "text-green-600 font-medium"
-                                      : ""
-                                  }
-                                >
-                                  {hr}%
-                                </span>
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
         </div>
       )}
     </div>

@@ -146,9 +146,60 @@ def run_predict(req: PredictRequest) -> PredictResponse:
     )
 
 
-# Lifespan — runs warmup before accepting requests 
+# Paths for benchmark results — primary in model/, copy to shared logs/ volume
+BENCHMARK_MODEL_PATH = BASE_DIR / "model" / "benchmark_results.json"
+BENCHMARK_LOGS_PATH  = BASE_DIR / "logs" / "benchmark_results.json"
+BENCHMARK_DATA_PATH  = BASE_DIR / "logs" / "cache_events.jsonl"
+
+
+def run_benchmark_if_needed():
+    """
+    Run benchmark.py simulation and save results.
+    - Always runs on startup so the dashboard always has results.
+    - Copies output to /app/logs/ (shared Docker volume) so the backend
+      can serve it via GET /api/cache/benchmark.
+    """
+    import subprocess
+    import shutil
+
+    # Ensure logs dir exists (needed in Docker before first log consumer flush)
+    BENCHMARK_LOGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    BENCHMARK_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    # Decide which data file to use
+    if BENCHMARK_DATA_PATH.exists():
+        data_arg = str(BENCHMARK_DATA_PATH)
+        print(f"Benchmark: using live log data ({BENCHMARK_DATA_PATH})")
+    else:
+        # No live data yet — skip benchmark (will run after first log flush)
+        print("Benchmark: no log data yet, skipping (will auto-run after data is collected)")
+        return
+
+    try:
+        print("Running LRU/LFU/LightCache benchmark simulation...")
+        result = subprocess.run(
+            ["python", str(BASE_DIR / "benchmark.py"),
+             "--data", data_arg,
+             "--output", str(BENCHMARK_MODEL_PATH)],
+            capture_output=True, text=True, timeout=120
+        )
+        if result.returncode == 0:
+            print("Benchmark complete.")
+            # Copy to shared volume so backend can read it
+            shutil.copy2(BENCHMARK_MODEL_PATH, BENCHMARK_LOGS_PATH)
+            print(f"Benchmark results copied to shared volume: {BENCHMARK_LOGS_PATH}")
+        else:
+            print(f"Benchmark exited with code {result.returncode}: {result.stderr[:200]}")
+    except subprocess.TimeoutExpired:
+        print("Benchmark timed out (>120s) — skipping")
+    except Exception as e:
+        print(f"Benchmark failed (non-critical): {e}")
+
+
+# Lifespan — runs warmup + benchmark before accepting requests
 @asynccontextmanager
 async def lifespan(app):
+    # 1. Model warmup
     print("Running warmup prediction...")
     try:
         dummy = PredictRequest(
@@ -164,6 +215,12 @@ async def lifespan(app):
         print(f"Warmup complete — first inference took {result.inference_ms}ms, model is hot")
     except Exception as e:
         print(f"Warmup failed (non-critical): {e}")
+
+    # 2. Auto-run benchmark (non-blocking — runs in background thread)
+    import threading
+    benchmark_thread = threading.Thread(target=run_benchmark_if_needed, daemon=True)
+    benchmark_thread.start()
+
     yield  # app runs here until shutdown
 
 

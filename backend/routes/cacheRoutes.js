@@ -1,6 +1,5 @@
 /**
  * Phase 7 — Cache Stats & A/B Evaluation Routes
- * ─────────────────────────────────────────────────────────────────
  * GET  /api/cache/stats     — full dashboard data
  * GET  /api/cache/ab        — A/B comparison (vanilla vs ML TTL)
  * DELETE /api/cache/flush   — clear all product cache keys
@@ -14,7 +13,7 @@ const { getClient, getIsConnected } = require("../config/redis");
 const { keyStats } = require("../config/mlClient");
 const { DEFAULT_TTLS } = require("../middleware/cacheMiddleware");
 
-// ── GET /api/cache/stats ──────────────────────────────────────────────────────
+// GET /api/cache/stats
 router.get("/stats", protect, admin, async (req, res) => {
   const client = getClient();
   if (!client || !getIsConnected()) {
@@ -22,7 +21,7 @@ router.get("/stats", protect, admin, async (req, res) => {
   }
 
   try {
-    // ── Stream log analysis ───────────────────────────────────────────────────
+    // Stream log analysis
     const streamEntries = await client.xRange("cache:logs", "-", "+");
 
     let hits = 0,
@@ -140,7 +139,7 @@ router.get("/stats", protect, admin, async (req, res) => {
   }
 });
 
-// ── GET /api/cache/ab ─────────────────────────────────────────────────────────
+// GET /api/cache/ab
 // A/B comparison — compares ML-predicted TTLs vs what fixed TTLs would have been
 router.get("/ab", protect, admin, async (req, res) => {
   const client = getClient();
@@ -226,7 +225,7 @@ router.get("/ab", protect, admin, async (req, res) => {
   }
 });
 
-// ── DELETE /api/cache/flush ───────────────────────────────────────────────────
+// DELETE /api/cache/flush
 router.delete("/flush", protect, admin, async (req, res) => {
   const client = getClient();
   if (!client || !getIsConnected()) {
@@ -241,7 +240,7 @@ router.delete("/flush", protect, admin, async (req, res) => {
   }
 });
 
-// ── DELETE /api/cache/flush-logs ──────────────────────────────────────────────
+// DELETE /api/cache/flush-logs
 router.delete("/flush-logs", protect, admin, async (req, res) => {
   const client = getClient();
   if (!client || !getIsConnected()) {
@@ -253,6 +252,56 @@ router.delete("/flush-logs", protect, admin, async (req, res) => {
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
+});
+
+// GET /api/cache/benchmark
+// Returns saved benchmark_results.json produced by benchmark.py.
+// The file lives in the ml-service container at /app/model/benchmark_results.json
+// and is accessible here via the shared logs_data volume at /app/logs/benchmark_results.json,
+// OR fetch it through the ML service HTTP endpoint as a fallback.
+const fs = require("fs");
+const path = require("path");
+
+const BENCHMARK_PATHS = [
+  // Path when running inside Docker (backend container has logs_data mounted at /app/logs)
+  path.join("/app", "logs", "benchmark_results.json"),
+  // Path when running locally (relative to backend root)
+  path.join(__dirname, "..", "logs", "benchmark_results.json"),
+  // Fallback: ml-service folder (local dev without Docker)
+  path.join(__dirname, "..", "..", "ml-service", "benchmark_results.json"),
+];
+
+router.get("/benchmark", protect, admin, async (req, res) => {
+  // 1. Try reading from disk first (fastest, works in Docker and local dev)
+  for (const filePath of BENCHMARK_PATHS) {
+    try {
+      if (fs.existsSync(filePath)) {
+        const raw = fs.readFileSync(filePath, "utf8");
+        const data = JSON.parse(raw);
+        return res.json(data);
+      }
+    } catch {
+      // Try next path
+    }
+  }
+
+  // 2. Fallback: proxy through ML service HTTP endpoint
+  const ML_SERVICE_URL = process.env.ML_SERVICE_URL || "http://localhost:8000";
+  try {
+    const response = await fetch(`${ML_SERVICE_URL}/benchmark/results`);
+    if (response.ok) {
+      const data = await response.json();
+      return res.json(data);
+    }
+  } catch {
+    // ML service unreachable
+  }
+
+  // 3. Nothing found
+  res.status(404).json({
+    message:
+      "No benchmark results found. Run: python benchmark.py inside the ml-service container.",
+  });
 });
 
 module.exports = router;
