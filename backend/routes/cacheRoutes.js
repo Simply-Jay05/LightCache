@@ -1,16 +1,13 @@
-/**
- * Phase 7 — Cache Stats & A/B Evaluation Routes
- * GET  /api/cache/stats     — full dashboard data
- * GET  /api/cache/ab        — A/B comparison (vanilla vs ML TTL)
- * DELETE /api/cache/flush   — clear all product cache keys
- * DELETE /api/cache/flush-logs — clear Redis Stream logs
- */
-
 const express = require("express");
 const router = express.Router();
 const { protect, admin } = require("../middleware/authMiddleware");
 const { getClient, getIsConnected } = require("../config/redis");
-const { keyStats } = require("../config/mlClient");
+const {
+  keyStats,
+  getMlMode,
+  setMlMode,
+  getMlReadiness,
+} = require("../config/mlClient");
 const { DEFAULT_TTLS } = require("../middleware/cacheMiddleware");
 
 // GET /api/cache/stats
@@ -302,6 +299,61 @@ router.get("/benchmark", protect, admin, async (req, res) => {
     message:
       "No benchmark results found. Run: python benchmark.py inside the ml-service container.",
   });
+});
+
+// ── ML Mode control ──────────────────────────────────────────────────────────
+
+// GET /api/cache/mode — returns current mode + readiness info
+router.get("/mode", protect, admin, async (req, res) => {
+  try {
+    const mode = await getMlMode();
+    const readiness = await getMlReadiness();
+    res.json({ mode, readiness });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// POST /api/cache/mode — { mode: "redis_only" | "ml_active" }
+router.post("/mode", protect, admin, async (req, res) => {
+  const { mode } = req.body;
+  if (!["redis_only", "ml_active"].includes(mode)) {
+    return res
+      .status(400)
+      .json({ message: "mode must be redis_only or ml_active" });
+  }
+  try {
+    await setMlMode(mode);
+    console.log(`[Admin] ML mode switched to: ${mode}`);
+    res.json({ mode, message: `Switched to ${mode}` });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// POST /api/cache/reset-training-data
+// Wipes the JSONL log + model artefacts via the ml-service so the
+// scheduler retrains from scratch on real user data.
+router.post("/reset-training-data", protect, admin, async (req, res) => {
+  const ML_SERVICE_URL = process.env.ML_SERVICE_URL || "http://localhost:8000";
+  try {
+    const response = await fetch(`${ML_SERVICE_URL}/admin/reset-data`, {
+      method: "POST",
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      return res.status(502).json({ message: `ML service error: ${text}` });
+    }
+    const data = await response.json();
+    // Also switch mode back to redis_only so ML isn't called against a deleted model
+    await setMlMode("redis_only");
+    res.json({ ...data, mode_reset_to: "redis_only" });
+  } catch (err) {
+    res
+      .status(503)
+      .json({ message: `Could not reach ML service: ${err.message}` });
+  }
 });
 
 module.exports = router;

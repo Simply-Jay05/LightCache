@@ -2,6 +2,63 @@ const ML_SERVICE_URL = process.env.ML_SERVICE_URL || "http://localhost:8000";
 const ML_TIMEOUT_MS = 200;
 const ML_ENABLED = process.env.ML_ENABLED !== "false";
 
+// ML Mode
+// Persisted in Redis so it survives backend restarts.
+// "redis_only"  = plain Redis caching, ML service not consulted
+// "ml_active"   = ML service consulted on every cache miss
+const ML_MODE_KEY = "lightcache:ml_mode";
+let _mlModeCache = "redis_only"; // in-memory cache to avoid Redis round-trip on every request
+
+const getRedisClient = () => {
+  try {
+    return require("./redis").getClient();
+  } catch {
+    return null;
+  }
+};
+
+const getMlMode = async () => {
+  const client = getRedisClient();
+  if (!client) return _mlModeCache;
+  try {
+    const val = await client.get(ML_MODE_KEY);
+    if (val === "ml_active" || val === "redis_only") {
+      _mlModeCache = val;
+      return val;
+    }
+  } catch {
+    /* silent */
+  }
+  return _mlModeCache;
+};
+
+const setMlMode = async (mode) => {
+  if (mode !== "redis_only" && mode !== "ml_active")
+    throw new Error("Invalid mode");
+  _mlModeCache = mode;
+  const client = getRedisClient();
+  if (client) {
+    try {
+      await client.set(ML_MODE_KEY, mode);
+    } catch {
+      /* silent */
+    }
+  }
+};
+
+// Returns data readiness info by proxying the ml-service
+const getMlReadiness = async () => {
+  try {
+    const response = await fetch(`${ML_SERVICE_URL}/admin/readiness`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (response.ok) return await response.json();
+  } catch {
+    /* silent */
+  }
+  return null;
+};
+
 //  Per-key stats tracker: Tracks hits, total accesses, last request timestamp, and
 // inter-arrival intervals so we can pass temporal features to the model.
 const keyStats = new Map();
@@ -83,6 +140,8 @@ const getPrediction = async ({
   price_tier = "unknown",
 }) => {
   if (!ML_ENABLED) return null;
+  // Check persisted mode — skip ML entirely if admin set redis_only
+  if (_mlModeCache === "redis_only") return null;
 
   const now = new Date();
   const hour = now.getHours();
@@ -152,5 +211,8 @@ module.exports = {
   updateKeyStats,
   getKeyStats,
   checkMlService,
+  getMlMode,
+  setMlMode,
+  getMlReadiness,
   keyStats,
 };

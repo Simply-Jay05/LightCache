@@ -16,6 +16,13 @@ const CacheDashboard = () => {
   const [retrainHistory, setRetrainHistory] = useState(null);
   const [benchmark, setBenchmark] = useState(null);
 
+  // ML control state
+  const [mlMode, setMlMode] = useState("redis_only");
+  const [mlReadiness, setMlReadiness] = useState(null);
+  const [simulating, setSimulating] = useState(false);
+  const [retraining, setRetraining] = useState(false);
+  const [mlActionMsg, setMlActionMsg] = useState(null); // { type: "ok"|"err", text }
+
   // Auth helpers
   const authHeaders = useCallback(
     () => ({
@@ -50,17 +57,22 @@ const CacheDashboard = () => {
       setError(null);
       const BASE = import.meta.env.VITE_BACKEND_URL;
 
-      const [statsRes, retrainRes, benchmarkRes] = await Promise.all([
+      const [statsRes, retrainRes, benchmarkRes, modeRes] = await Promise.all([
         authGet(`${BASE}/api/cache/stats`),
         authGet(`${BASE}/api/ml/retrain-history`).catch(() => ({
           data: { history: [] },
         })),
         authGet(`${BASE}/api/cache/benchmark`).catch(() => ({ data: null })),
+        authGet(`${BASE}/api/cache/mode`).catch(() => ({
+          data: { mode: "redis_only", readiness: null },
+        })),
       ]);
 
       setStats(statsRes.data);
       setRetrainHistory(retrainRes.data);
       setBenchmark(benchmarkRes?.data || null);
+      setMlMode(modeRes.data.mode || "redis_only");
+      setMlReadiness(modeRes.data.readiness || null);
     } catch (err) {
       if (err.response?.status === 401) return;
       setError("Failed to load cache data. Make sure Redis is running.");
@@ -111,6 +123,144 @@ const CacheDashboard = () => {
     } catch (err) {
       if (err.response?.status === 401) return handleUnauthorized();
       alert("Flush logs failed");
+    }
+  };
+
+  // ── ML Control actions ────────────────────────────────────────────────────
+  const showMlMsg = (type, text) => {
+    setMlActionMsg({ type, text });
+    setTimeout(() => setMlActionMsg(null), 6000);
+  };
+
+  const handleModeToggle = async (newMode) => {
+    if (newMode === "ml_active" && !mlReadiness?.model_exists) {
+      showMlMsg(
+        "err",
+        "No trained model found. Train the model first before activating ML mode.",
+      );
+      return;
+    }
+    try {
+      const BASE = import.meta.env.VITE_BACKEND_URL;
+      await axios.post(
+        `${BASE}/api/cache/mode`,
+        { mode: newMode },
+        authHeaders(),
+      );
+      setMlMode(newMode);
+      showMlMsg(
+        "ok",
+        newMode === "ml_active"
+          ? "ML mode activated — dynamic TTL predictions are now live."
+          : "Switched to plain Redis caching. ML service will not be consulted.",
+      );
+    } catch (err) {
+      if (err.response?.status === 401) return handleUnauthorized();
+      showMlMsg("err", "Failed to switch mode.");
+    }
+  };
+
+  const handleSimulate = async () => {
+    if (
+      !window.confirm(
+        "Generate synthetic training rows based on your real captured traffic?\n\n" +
+          "This augments cache_events.jsonl to meet the minimum row threshold. " +
+          "The synthetic rows mirror your real users' distribution — not random locust patterns.",
+      )
+    )
+      return;
+    setSimulating(true);
+    setMlActionMsg(null);
+    try {
+      const BASE = import.meta.env.VITE_BACKEND_URL;
+      const res = await axios.post(
+        `${BASE}/api/ml/simulate-from-real`,
+        {},
+        authHeaders(),
+      );
+      const d = res.data;
+      showMlMsg(
+        "ok",
+        `Done. ${d.real_rows} real rows + ${d.generated} simulated = ${d.total} total. ` +
+          (d.ready
+            ? "Ready to train!"
+            : `Still need ${1000 - d.total} more rows.`),
+      );
+      fetchData();
+    } catch (err) {
+      if (err.response?.status === 401) return handleUnauthorized();
+      showMlMsg("err", err.response?.data?.message || "Simulation failed.");
+    } finally {
+      setSimulating(false);
+    }
+  };
+
+  const handleTriggerRetrain = async () => {
+    if (
+      !window.confirm(
+        "Train the ML model now using current data?\n\n" +
+          "This may take 1-3 minutes. The old model stays active until training completes.",
+      )
+    )
+      return;
+    setRetraining(true);
+    setMlActionMsg(null);
+    try {
+      const BASE = import.meta.env.VITE_BACKEND_URL;
+      const res = await axios.post(
+        `${BASE}/api/ml/trigger-retrain`,
+        {},
+        authHeaders(),
+      );
+      showMlMsg(
+        "ok",
+        `Model trained on ${res.data.training_rows?.toLocaleString()} rows. ` +
+          "You can now activate ML mode.",
+      );
+      fetchData();
+    } catch (err) {
+      if (err.response?.status === 401) return handleUnauthorized();
+      showMlMsg(
+        "err",
+        err.response?.data?.detail ||
+          err.response?.data?.message ||
+          "Training failed.",
+      );
+    } finally {
+      setRetraining(false);
+    }
+  };
+
+  const handleResetTrainingData = async () => {
+    if (
+      !window.confirm(
+        "RESET ALL TRAINING DATA?\n\n" +
+          "This will permanently delete:\n" +
+          "• cache_events.jsonl (all captured events)\n" +
+          "• The trained model and metadata\n" +
+          "• Retrain history\n\n" +
+          "ML mode will be switched back to plain Redis. " +
+          "Use this to clear locust-simulated data before going live with real users.\n\n" +
+          "Type OK to confirm.",
+      )
+    )
+      return;
+    try {
+      const BASE = import.meta.env.VITE_BACKEND_URL;
+      const res = await axios.post(
+        `${BASE}/api/cache/reset-training-data`,
+        {},
+        authHeaders(),
+      );
+      setMlMode("redis_only");
+      showMlMsg(
+        "ok",
+        `Reset complete. Deleted: ${res.data.deleted?.join(", ") || "all artefacts"}. System now uses plain Redis caching.`,
+      );
+      fetchData();
+    } catch (err) {
+      if (err.response?.status === 401) return handleUnauthorized();
+      showMlMsg("err", err.response?.data?.message || "Reset failed.");
     }
   };
 
@@ -238,19 +388,33 @@ const CacheDashboard = () => {
         ))}
       </div>
 
-      {/* Tabs — removed A/B tab, benchmark moved to second position */}
+      {/* Tabs */}
       <div className="flex gap-1 mb-6 border-b">
-        {["overview", "benchmark", "keys", "logs", "retraining"].map((tab) => (
+        {[
+          "overview",
+          "benchmark",
+          "keys",
+          "logs",
+          "retraining",
+          "ml-control",
+        ].map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2 text-sm font-medium capitalize transition-colors ${
+            className={`px-4 py-2 text-sm font-medium capitalize transition-colors relative ${
               activeTab === tab
                 ? "border-b-2 border-black text-black"
                 : "text-gray-500 hover:text-black"
             }`}
           >
-            {tab}
+            {tab === "ml-control" ? "ML Control" : tab}
+            {tab === "ml-control" && (
+              <span
+                className={`ml-1.5 inline-block w-2 h-2 rounded-full ${
+                  mlMode === "ml_active" ? "bg-green-500" : "bg-gray-300"
+                }`}
+              />
+            )}
           </button>
         ))}
       </div>
@@ -822,6 +986,348 @@ const CacheDashboard = () => {
                 </tbody>
               </table>
             )}
+          </div>
+        </div>
+      )}
+      {/* ML Control */}
+      {activeTab === "ml-control" && (
+        <div className="space-y-6">
+          {/* Action message banner */}
+          {mlActionMsg && (
+            <div
+              className={`px-4 py-3 rounded-lg text-sm font-medium ${
+                mlActionMsg.type === "ok"
+                  ? "bg-green-50 text-green-800 border border-green-200"
+                  : "bg-red-50 text-red-800 border border-red-200"
+              }`}
+            >
+              {mlActionMsg.type === "ok" ? "✓ " : "✗ "}
+              {mlActionMsg.text}
+            </div>
+          )}
+
+          {/* Auto-suggest banner when data threshold met but ML not active */}
+          {mlReadiness?.ready &&
+            !mlReadiness?.model_exists &&
+            mlMode === "redis_only" && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-blue-800">
+                    Enough data collected to train the model
+                  </p>
+                  <p className="text-xs text-blue-600 mt-0.5">
+                    {mlReadiness.row_count?.toLocaleString()} rows captured —
+                    click "Train model now" to proceed.
+                  </p>
+                </div>
+                <button
+                  onClick={handleTriggerRetrain}
+                  disabled={retraining}
+                  className="ml-4 px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
+                >
+                  {retraining ? "Training..." : "Train model now"}
+                </button>
+              </div>
+            )}
+
+          {mlReadiness?.model_exists && mlMode === "redis_only" && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-amber-800">
+                  Model is trained and ready — ML mode is off
+                </p>
+                <p className="text-xs text-amber-600 mt-0.5">
+                  Last trained:{" "}
+                  {mlReadiness.last_trained
+                    ? new Date(mlReadiness.last_trained).toLocaleString()
+                    : "unknown"}
+                  . Activate ML mode to enable dynamic TTL predictions.
+                </p>
+              </div>
+              <button
+                onClick={() => handleModeToggle("ml_active")}
+                className="ml-4 px-4 py-2 bg-black text-white text-sm rounded hover:bg-gray-800 whitespace-nowrap"
+              >
+                Activate ML mode
+              </button>
+            </div>
+          )}
+
+          {/* Mode toggle */}
+          <div className="border rounded-lg overflow-hidden">
+            <div className="px-4 py-3 bg-gray-50 border-b">
+              <h2 className="font-semibold">Caching mode</h2>
+              <p className="text-xs text-gray-500 mt-1">
+                Switch between plain Redis caching and ML-powered dynamic TTL
+                predictions. Changes take effect immediately — no restart
+                needed.
+              </p>
+            </div>
+            <div className="p-4 flex gap-3">
+              <button
+                onClick={() => handleModeToggle("redis_only")}
+                className={`flex-1 py-3 px-4 rounded-lg border-2 text-left transition-all ${
+                  mlMode === "redis_only"
+                    ? "border-black bg-black text-white"
+                    : "border-gray-200 hover:border-gray-400 text-gray-700"
+                }`}
+              >
+                <div className="font-medium text-sm">Plain Redis</div>
+                <div
+                  className={`text-xs mt-0.5 ${mlMode === "redis_only" ? "text-gray-300" : "text-gray-500"}`}
+                >
+                  Fixed TTLs, no ML service calls. Use during initial
+                  deployment.
+                </div>
+              </button>
+              <button
+                onClick={() => handleModeToggle("ml_active")}
+                disabled={!mlReadiness?.model_exists}
+                className={`flex-1 py-3 px-4 rounded-lg border-2 text-left transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+                  mlMode === "ml_active"
+                    ? "border-black bg-black text-white"
+                    : "border-gray-200 hover:border-gray-400 text-gray-700"
+                }`}
+              >
+                <div className="font-medium text-sm flex items-center gap-2">
+                  ML Active
+                  {mlMode === "ml_active" && (
+                    <span className="inline-block w-2 h-2 rounded-full bg-green-400" />
+                  )}
+                </div>
+                <div
+                  className={`text-xs mt-0.5 ${mlMode === "ml_active" ? "text-gray-300" : "text-gray-500"}`}
+                >
+                  {mlReadiness?.model_exists
+                    ? "Dynamic TTL + eviction scores from trained model."
+                    : "Disabled — train a model first."}
+                </div>
+              </button>
+            </div>
+          </div>
+
+          {/* Data readiness */}
+          <div className="border rounded-lg overflow-hidden">
+            <div className="px-4 py-3 bg-gray-50 border-b">
+              <h2 className="font-semibold">Training data readiness</h2>
+              <p className="text-xs text-gray-500 mt-1">
+                The model needs at least{" "}
+                {mlReadiness?.min_rows?.toLocaleString() ?? "1,000"} rows of
+                real cache events to train on.
+              </p>
+            </div>
+            <div className="p-4 space-y-4">
+              {/* Progress bar */}
+              <div>
+                <div className="flex justify-between text-sm mb-1.5">
+                  <span className="text-gray-600">
+                    {mlReadiness?.row_count?.toLocaleString() ?? 0} rows
+                    captured
+                  </span>
+                  <span
+                    className={`font-medium ${mlReadiness?.ready ? "text-green-600" : "text-gray-500"}`}
+                  >
+                    {mlReadiness?.ready
+                      ? "✓ Ready to train"
+                      : `${mlReadiness?.pct ?? 0}% of threshold`}
+                  </span>
+                </div>
+                <div className="w-full bg-gray-100 rounded-full h-3">
+                  <div
+                    className={`h-3 rounded-full transition-all ${
+                      mlReadiness?.ready ? "bg-green-500" : "bg-blue-500"
+                    }`}
+                    style={{
+                      width: `${Math.min(mlReadiness?.pct ?? 0, 100)}%`,
+                    }}
+                  />
+                </div>
+                <div className="flex justify-between text-xs text-gray-400 mt-1">
+                  <span>0</span>
+                  <span>
+                    {mlReadiness?.min_rows?.toLocaleString() ?? "1,000"} min
+                  </span>
+                </div>
+              </div>
+
+              {/* Status chips */}
+              <div className="flex gap-3 flex-wrap">
+                <div
+                  className={`px-3 py-1.5 rounded-full text-xs font-medium ${
+                    mlReadiness?.model_exists
+                      ? "bg-green-100 text-green-800"
+                      : "bg-gray-100 text-gray-600"
+                  }`}
+                >
+                  {mlReadiness?.model_exists
+                    ? "✓ Model exists"
+                    : "✗ No model yet"}
+                </div>
+                <div
+                  className={`px-3 py-1.5 rounded-full text-xs font-medium ${
+                    mlReadiness?.ready
+                      ? "bg-green-100 text-green-800"
+                      : "bg-yellow-100 text-yellow-800"
+                  }`}
+                >
+                  {mlReadiness?.ready
+                    ? "✓ Data threshold met"
+                    : "Collecting data..."}
+                </div>
+                <div
+                  className={`px-3 py-1.5 rounded-full text-xs font-medium ${
+                    mlMode === "ml_active"
+                      ? "bg-black text-white"
+                      : "bg-gray-100 text-gray-600"
+                  }`}
+                >
+                  {mlMode === "ml_active" ? "● ML mode on" : "○ ML mode off"}
+                </div>
+              </div>
+
+              {mlReadiness?.last_trained && (
+                <p className="text-xs text-gray-500">
+                  Last trained:{" "}
+                  {new Date(mlReadiness.last_trained).toLocaleString()}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="border rounded-lg overflow-hidden">
+            <div className="px-4 py-3 bg-gray-50 border-b">
+              <h2 className="font-semibold">Actions</h2>
+              <p className="text-xs text-gray-500 mt-1">
+                All actions run on the server — no command line needed.
+              </p>
+            </div>
+            <div className="p-4 space-y-3">
+              {/* Simulate from real data */}
+              <div className="flex items-start justify-between gap-4 py-3 border-b">
+                <div>
+                  <p className="text-sm font-medium">Simulate from real data</p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    If real rows exist but are below threshold, generate
+                    synthetic rows that mirror your actual users' route and
+                    timing distribution. Safe to run — augments your real data,
+                    doesn't replace it.
+                  </p>
+                </div>
+                <button
+                  onClick={handleSimulate}
+                  disabled={
+                    simulating ||
+                    !mlReadiness ||
+                    (mlReadiness.row_count ?? 0) < 10
+                  }
+                  className="shrink-0 px-4 py-2 border border-gray-300 rounded text-sm hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {simulating ? "Simulating..." : "Simulate"}
+                </button>
+              </div>
+
+              {/* Train now */}
+              <div className="flex items-start justify-between gap-4 py-3 border-b">
+                <div>
+                  <p className="text-sm font-medium">Train model now</p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Force an immediate training run using all available data.
+                    The existing model stays active until training completes,
+                    then hot-reloads with zero downtime. Takes 1–3 minutes.
+                  </p>
+                </div>
+                <button
+                  onClick={handleTriggerRetrain}
+                  disabled={retraining || !mlReadiness?.ready}
+                  className="shrink-0 px-4 py-2 bg-black text-white rounded text-sm hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {retraining ? "Training..." : "Train now"}
+                </button>
+              </div>
+
+              {/* Reset training data */}
+              <div className="flex items-start justify-between gap-4 py-3">
+                <div>
+                  <p className="text-sm font-medium text-red-600">
+                    Reset all training data
+                  </p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Permanently deletes cache_events.jsonl, the trained model,
+                    and retrain history. Use this to wipe locust-simulated data
+                    before going live so the model retrains on real users only.
+                    ML mode is automatically switched off.
+                  </p>
+                </div>
+                <button
+                  onClick={handleResetTrainingData}
+                  className="shrink-0 px-4 py-2 bg-red-500 text-white rounded text-sm hover:bg-red-600"
+                >
+                  Reset data
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Lifecycle guide */}
+          <div className="border rounded-lg overflow-hidden">
+            <div className="px-4 py-3 bg-gray-50 border-b">
+              <h2 className="font-semibold">Deployment lifecycle</h2>
+            </div>
+            <div className="p-4">
+              <ol className="space-y-3 text-sm">
+                {[
+                  {
+                    step: "1",
+                    title: "Deploy — plain Redis mode",
+                    desc: "System starts in plain Redis mode. All caching uses fixed TTLs. The system silently collects real traffic events in the background.",
+                    done: true,
+                  },
+                  {
+                    step: "2",
+                    title: "Collect real traffic (~1 week)",
+                    desc: `Traffic events are logged to cache_events.jsonl. Watch the data readiness bar above. Target: ${mlReadiness?.min_rows?.toLocaleString() ?? "1,000"} rows.`,
+                    done: (mlReadiness?.row_count ?? 0) > 0,
+                  },
+                  {
+                    step: "3",
+                    title: "Optional: simulate if data is thin",
+                    desc: "If after a week you're still below threshold, use 'Simulate from real data' to augment with synthetic rows based on your actual traffic distribution.",
+                    done: false,
+                  },
+                  {
+                    step: "4",
+                    title: "Train the model",
+                    desc: "Click 'Train model now'. Takes 1–3 minutes. Model hot-reloads with zero downtime.",
+                    done: mlReadiness?.model_exists,
+                  },
+                  {
+                    step: "5",
+                    title: "Activate ML mode",
+                    desc: "Switch to ML Active above. The system now uses dynamic TTL predictions on every cache miss. Monitor hit rate in the Overview tab.",
+                    done: mlMode === "ml_active",
+                  },
+                ].map((item) => (
+                  <li key={item.step} className="flex gap-3">
+                    <span
+                      className={`shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold mt-0.5 ${
+                        item.done
+                          ? "bg-green-500 text-white"
+                          : "bg-gray-200 text-gray-600"
+                      }`}
+                    >
+                      {item.done ? "✓" : item.step}
+                    </span>
+                    <div>
+                      <p className="font-medium text-gray-800">{item.title}</p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        {item.desc}
+                      </p>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </div>
           </div>
         </div>
       )}

@@ -1,5 +1,6 @@
 import json
 import math
+import os
 import pickle
 import time
 from contextlib import asynccontextmanager
@@ -152,71 +153,51 @@ BENCHMARK_LOGS_PATH  = BASE_DIR / "logs" / "benchmark_results.json"
 BENCHMARK_DATA_PATH  = BASE_DIR / "logs" / "cache_events.jsonl"
 
 
-def _run_benchmark_once():
+def run_benchmark_if_needed():
     """
-    Execute benchmark.py and copy results to the shared logs volume.
-    Returns True on success, False on any failure.
+    Run benchmark.py simulation and save results.
+    - Always runs on startup so the dashboard always has results.
+    - Copies output to /app/logs/ (shared Docker volume) so the backend
+      can serve it via GET /api/cache/benchmark.
     """
     import subprocess
     import shutil
 
+    # Ensure logs dir exists (needed in Docker before first log consumer flush)
     BENCHMARK_LOGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     BENCHMARK_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    # Decide which data file to use
+    if BENCHMARK_DATA_PATH.exists():
+        data_arg = str(BENCHMARK_DATA_PATH)
+        print(f"Benchmark: using live log data ({BENCHMARK_DATA_PATH})")
+    else:
+        # No live data yet — skip benchmark (will run after first log flush)
+        print("Benchmark: no log data yet, skipping (will auto-run after data is collected)")
+        return
 
     try:
         print("Running LRU/LFU/LightCache benchmark simulation...")
         result = subprocess.run(
-            [
-                "python", str(BASE_DIR / "benchmark.py"),
-                "--data",   str(BENCHMARK_DATA_PATH),
-                "--output", str(BENCHMARK_MODEL_PATH),
-            ],
-            capture_output=True, text=True, timeout=120,
+            ["python", str(BASE_DIR / "benchmark.py"),
+             "--data", data_arg,
+             "--output", str(BENCHMARK_MODEL_PATH)],
+            capture_output=True, text=True, timeout=120
         )
         if result.returncode == 0:
+            print("Benchmark complete.")
+            # Copy to shared volume so backend can read it
             shutil.copy2(BENCHMARK_MODEL_PATH, BENCHMARK_LOGS_PATH)
-            print(f"Benchmark complete — results saved to {BENCHMARK_LOGS_PATH}")
-            return True
+            print(f"Benchmark results copied to shared volume: {BENCHMARK_LOGS_PATH}")
         else:
-            print(f"Benchmark failed (exit {result.returncode}): {result.stderr[:300]}")
+            print(f"Benchmark exited with code {result.returncode}: {result.stderr[:200]}")
     except subprocess.TimeoutExpired:
-        print("Benchmark timed out (>120s) — will retry on next poll")
+        print("Benchmark timed out (>120s) — skipping")
     except Exception as e:
-        print(f"Benchmark error (non-critical): {e}")
-    return False
+        print(f"Benchmark failed (non-critical): {e}")
 
 
-def run_benchmark_watcher():
-    """
-    Background thread: polls every 60 s for cache_events.jsonl (written by
-    logConsumer.js), runs benchmark.py as soon as data is available, then
-    refreshes hourly so the dashboard always shows up-to-date results.
-
-    Why polling?
-    The ml-service starts before the backend.  logConsumer.js needs roughly
-    5 minutes of live traffic before it flushes its first JSONL batch.
-    A one-shot check at startup always misses this window — which is why the
-    dashboard was stuck on "Benchmark Running..." indefinitely.
-    """
-    POLL_INTERVAL    = 60      # seconds between "is data ready?" checks
-    REFRESH_INTERVAL = 3600    # re-run every hour once data exists
-
-    print("Benchmark watcher started — polling for log data every 60 s ...")
-    last_run_at = 0.0
-
-    while True:
-        now = time.time()
-        if BENCHMARK_DATA_PATH.exists():
-            if now - last_run_at >= REFRESH_INTERVAL:
-                print(f"Benchmark watcher: log data detected, running benchmark ...")
-                if _run_benchmark_once():
-                    last_run_at = time.time()
-        else:
-            print("Benchmark watcher: cache_events.jsonl not yet available, waiting ...")
-        time.sleep(POLL_INTERVAL)
-
-
-# Lifespan — runs warmup + starts benchmark watcher before accepting requests
+# Lifespan — runs warmup + benchmark before accepting requests
 @asynccontextmanager
 async def lifespan(app):
     # 1. Model warmup
@@ -236,12 +217,10 @@ async def lifespan(app):
     except Exception as e:
         print(f"Warmup failed (non-critical): {e}")
 
-    # 2. Start benchmark watcher (non-blocking background thread).
-    #    Waits for cache_events.jsonl to appear (written by logConsumer.js),
-    #    then runs benchmark.py automatically — no manual docker exec needed.
+    # 2. Auto-run benchmark (non-blocking — runs in background thread)
     import threading
-    watcher = threading.Thread(target=run_benchmark_watcher, daemon=True)
-    watcher.start()
+    benchmark_thread = threading.Thread(target=run_benchmark_if_needed, daemon=True)
+    benchmark_thread.start()
 
     yield  # app runs here until shutdown
 
@@ -360,6 +339,249 @@ def retrain_history():
         "total_retrains": len(history),
         "latest":         history[-1] if history else None,
     }
+
+
+@app.get("/admin/readiness")
+def readiness():
+    """
+    Returns current data readiness so the dashboard can show the admin
+    how many rows have been collected vs the minimum needed to retrain.
+    """
+    MIN_ROWS = int(os.getenv("MIN_ROWS_TO_RETRAIN", "1000"))
+    row_count = 0
+    if BENCHMARK_DATA_PATH.exists():
+        try:
+            with open(BENCHMARK_DATA_PATH, "r", encoding="utf-8") as f:
+                row_count = sum(1 for line in f if line.strip())
+        except Exception:
+            pass
+
+    model_exists = MODEL_PATH.exists()
+    history_file = BASE_DIR / "model" / "retrain_history.json"
+    last_trained = None
+    if history_file.exists():
+        try:
+            with open(history_file, "r") as f:
+                hist = json.load(f)
+            if hist:
+                last_trained = hist[-1].get("retrained_at")
+        except Exception:
+            pass
+
+    return {
+        "row_count":      row_count,
+        "min_rows":       MIN_ROWS,
+        "ready":          row_count >= MIN_ROWS,
+        "model_exists":   model_exists,
+        "last_trained":   last_trained,
+        "pct":            round(min(row_count / max(MIN_ROWS, 1) * 100, 100), 1),
+    }
+
+
+@app.post("/admin/reset-data")
+def reset_data():
+    """
+    Wipes all locust-simulated (or stale) training data so the system
+    retrains from scratch on real user traffic. Also deletes model
+    artefacts so no stale model is served until retraining completes.
+    Called from the admin dashboard — no command line needed.
+    """
+    deleted = []
+    for p in [
+        BENCHMARK_DATA_PATH,
+        MODEL_PATH,
+        META_PATH,
+        BENCHMARK_MODEL_PATH,
+        BENCHMARK_LOGS_PATH,
+        BASE_DIR / "model" / "retrain_history.json",
+        BASE_DIR / "model" / "lightcache_model_backup.pkl",
+        BASE_DIR / "logs"  / "cache_events_window.jsonl",
+    ]:
+        if p.exists():
+            p.unlink()
+            deleted.append(p.name)
+
+    return {
+        "status":  "reset",
+        "deleted": deleted,
+        "message": "All training data and model artefacts wiped. "
+                   "System will retrain automatically once enough real traffic is collected.",
+    }
+
+
+@app.post("/admin/simulate-from-real")
+def simulate_from_real():
+    """
+    Generates synthetic training rows that mirror the statistical
+    distribution of real captured events in cache_events.jsonl.
+    Use this when real data exists but is below MIN_ROWS_TO_RETRAIN.
+
+    Strategy:
+      1. Read all real rows from BENCHMARK_DATA_PATH.
+      2. Compute per-route and per-hour frequency distributions.
+      3. Generate synthetic rows by sampling those distributions with
+         small gaussian noise on numeric fields.
+      4. Append to BENCHMARK_DATA_PATH until MIN_ROWS_TO_RETRAIN is met.
+    """
+    import random
+    import math as _math
+
+    MIN_ROWS = int(os.getenv("MIN_ROWS_TO_RETRAIN", "1000"))
+
+    # Read real rows
+    real_rows = []
+    if BENCHMARK_DATA_PATH.exists():
+        with open(BENCHMARK_DATA_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        real_rows.append(json.loads(line))
+                    except Exception:
+                        pass
+
+    if len(real_rows) < 10:
+        raise HTTPException(
+            status_code=400,
+            detail="Need at least 10 real rows to base simulation on. "
+                   "Collect some real traffic first.",
+        )
+
+    existing_count = len(real_rows)
+    needed = max(0, MIN_ROWS - existing_count)
+
+    if needed == 0:
+        return {
+            "status":    "already_ready",
+            "real_rows": existing_count,
+            "generated": 0,
+            "total":     existing_count,
+        }
+
+    # Build distributions from real data
+    route_choices  = [r.get("route_type",  "products_list") for r in real_rows]
+    page_choices   = [r.get("page_type",   "collection")    for r in real_rows]
+    tier_choices   = [r.get("price_tier",  "unknown")       for r in real_rows]
+    event_choices  = [r.get("event_type",  "MISS")          for r in real_rows]
+    ttl_values     = [float(r.get("ttl_used",    300)) for r in real_rows]
+    latency_values = [float(r.get("latency_ms",  50))  for r in real_rows]
+    hour_choices   = [int(r.get("hour_of_day",   12))  for r in real_rows]
+
+    ttl_mean    = sum(ttl_values)     / len(ttl_values)
+    ttl_std     = (_math.sqrt(sum((x - ttl_mean)**2    for x in ttl_values)    / len(ttl_values)) or 30)
+    lat_mean    = sum(latency_values) / len(latency_values)
+    lat_std     = (_math.sqrt(sum((x - lat_mean)**2    for x in latency_values) / len(latency_values)) or 20)
+
+    now_ms = time.time() * 1000
+    generated_rows = []
+
+    for _ in range(needed):
+        hour    = random.choice(hour_choices)
+        weekday = random.randint(0, 6)
+        ttl_raw = max(30, ttl_mean + random.gauss(0, ttl_std * 0.3))
+        lat_raw = max(1,  lat_mean + random.gauss(0, lat_std  * 0.3))
+        route   = random.choice(route_choices)
+        event   = random.choice(event_choices)
+        ts_jitter = random.uniform(-7 * 24 * 3600 * 1000, 0)  # within last 7 days
+
+        row = {
+            "event_type":   event,
+            "cache_key":    f"products:sim:{random.randint(1, 500)}",
+            "route_type":   route,
+            "page_type":    random.choice(page_choices),
+            "item_id":      str(random.randint(1, 500)),
+            "query":        "{}",
+            "ttl_used":     str(round(ttl_raw)),
+            "latency_ms":   str(round(lat_raw, 2)),
+            "hour_of_day":  str(hour),
+            "weekday":      str(weekday),
+            "ml_used":      "false",
+            "price_tier":   random.choice(tier_choices),
+            "timestamp":    str(int(now_ms + ts_jitter)),
+        }
+        generated_rows.append(row)
+
+    # Append to JSONL
+    BENCHMARK_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(BENCHMARK_DATA_PATH, "a", encoding="utf-8") as f:
+        for row in generated_rows:
+            f.write(json.dumps(row) + "\n")
+
+    total = existing_count + len(generated_rows)
+    print(f"[simulate-from-real] Generated {len(generated_rows)} rows → total {total}")
+
+    return {
+        "status":    "simulated",
+        "real_rows": existing_count,
+        "generated": len(generated_rows),
+        "total":     total,
+        "ready":     total >= MIN_ROWS,
+    }
+
+
+@app.post("/admin/trigger-retrain")
+def trigger_retrain():
+    """
+    Force an immediate retraining run from the dashboard, bypassing
+    the scheduled interval. Runs synchronously and returns metrics.
+    """
+    import subprocess
+
+    TRAIN_SCRIPT = BASE_DIR / "train.py"
+    if not BENCHMARK_DATA_PATH.exists():
+        raise HTTPException(
+            status_code=400,
+            detail="No training data found. Collect real traffic or run simulate-from-real first.",
+        )
+
+    MIN_ROWS = int(os.getenv("MIN_ROWS_TO_RETRAIN", "1000"))
+    row_count = sum(1 for line in open(BENCHMARK_DATA_PATH) if line.strip())
+    if row_count < MIN_ROWS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only {row_count} rows available — need {MIN_ROWS}. "
+                   "Use simulate-from-real to augment first.",
+        )
+
+    try:
+        result = subprocess.run(
+            ["python", str(TRAIN_SCRIPT), "--data", str(BENCHMARK_DATA_PATH)],
+            capture_output=True, text=True, timeout=300,
+        )
+        if result.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Training failed: {result.stderr[:500]}",
+            )
+
+        # Hot-reload the freshly trained model
+        global TTL_MODEL, EVICT_MODEL, PREFETCH_MODEL, FEATURE_COLS, ROUTE_TYPES, META
+        with open(MODEL_PATH, "rb") as f:
+            new_bundle = pickle.load(f)
+        TTL_MODEL      = new_bundle["ttl_model"]
+        EVICT_MODEL    = new_bundle["evict_model"]
+        PREFETCH_MODEL = new_bundle["prefetch_model"]
+        FEATURE_COLS   = new_bundle["feature_cols"]
+        ROUTE_TYPES    = new_bundle["route_types"]
+        with open(META_PATH, "r") as f:
+            META = json.load(f)
+
+        print(f"[trigger-retrain] Retrained on {row_count} rows, model hot-reloaded.")
+
+        return {
+            "status":        "retrained",
+            "training_rows": row_count,
+            "trained_at":    META["trained_at"],
+            "message":       "Model retrained and hot-reloaded. You can now activate ML mode.",
+        }
+    except HTTPException:
+        raise
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Training timed out (>5 min)")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 if __name__ == "__main__":
     uvicorn.run(
