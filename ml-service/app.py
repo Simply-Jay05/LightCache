@@ -326,6 +326,50 @@ def benchmark_results():
     with open(results_file, "r") as f:
         return json.load(f)
 
+
+@app.post("/benchmark/run")
+def run_benchmark_now():
+    """
+    Synchronously re-runs benchmark.py against the current cache_events.jsonl
+    and returns the fresh results. Called from the admin dashboard whenever
+    the user wants up-to-date numbers without restarting the container.
+    Typically completes in 2–10 seconds.
+    """
+    import subprocess, shutil
+
+    if not BENCHMARK_DATA_PATH.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="No log data yet (cache_events.jsonl missing). "
+                   "Generate some traffic first, then re-run."
+        )
+
+    try:
+        result = subprocess.run(
+            [
+                "python", str(BASE_DIR / "benchmark.py"),
+                "--data",   str(BENCHMARK_DATA_PATH),
+                "--output", str(BENCHMARK_MODEL_PATH),
+            ],
+            capture_output=True, text=True, timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Benchmark timed out (>120s)")
+
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"benchmark.py exited {result.returncode}: {result.stderr[:300]}"
+        )
+
+    # Sync to shared volume so the backend's file-read path also picks it up
+    BENCHMARK_LOGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(BENCHMARK_MODEL_PATH, BENCHMARK_LOGS_PATH)
+
+    with open(BENCHMARK_MODEL_PATH, "r") as f:
+        return json.load(f)
+
+
 @app.get("/admin/retrain-history")
 def retrain_history():
     """Returns the full retraining history for the dashboard."""

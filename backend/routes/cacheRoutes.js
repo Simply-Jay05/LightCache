@@ -301,6 +301,36 @@ router.get("/benchmark", protect, admin, async (req, res) => {
   });
 });
 
+// POST /api/cache/benchmark/run
+// Triggers a fresh benchmark run against the current cache_events.jsonl.
+// Proxies to the ml-service /benchmark/run endpoint which executes benchmark.py
+// synchronously and returns the updated results. Use this after clearing logs
+// or generating new traffic — no container restart needed.
+router.post("/benchmark/run", protect, admin, async (req, res) => {
+  const ML_SERVICE_URL = process.env.ML_SERVICE_URL || "http://localhost:8000";
+  try {
+    const response = await fetch(`${ML_SERVICE_URL}/benchmark/run`, {
+      method: "POST",
+      signal: AbortSignal.timeout(130_000), // slightly longer than benchmark's 120s timeout
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      return res.status(502).json({ message: `ML service error: ${text}` });
+    }
+
+    const data = await response.json();
+    return res.json(data);
+  } catch (err) {
+    if (err.name === "TimeoutError") {
+      return res.status(504).json({ message: "Benchmark timed out (>130s)" });
+    }
+    return res
+      .status(503)
+      .json({ message: `Could not reach ML service: ${err.message}` });
+  }
+});
+
 // ── ML Mode control ──────────────────────────────────────────────────────────
 
 // GET /api/cache/mode — returns current mode + readiness info

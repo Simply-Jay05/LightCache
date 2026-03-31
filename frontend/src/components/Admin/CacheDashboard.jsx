@@ -22,6 +22,8 @@ const CacheDashboard = () => {
   const [simulating, setSimulating] = useState(false);
   const [retraining, setRetraining] = useState(false);
   const [mlActionMsg, setMlActionMsg] = useState(null); // { type: "ok"|"err", text }
+  const [benchmarkRunning, setBenchmarkRunning] = useState(false);
+  const [benchmarkMsg, setBenchmarkMsg] = useState(null); // { type: "ok"|"err", text }
 
   // Auth helpers
   const authHeaders = useCallback(
@@ -126,7 +128,31 @@ const CacheDashboard = () => {
     }
   };
 
-  // ── ML Control actions ────────────────────────────────────────────────────
+  const handleRunBenchmark = async () => {
+    setBenchmarkRunning(true);
+    setBenchmarkMsg(null);
+    try {
+      const res = await axios.post(
+        `${import.meta.env.VITE_BACKEND_URL}/api/cache/benchmark/run`,
+        {},
+        authHeaders(),
+      );
+      // Update benchmark state directly with the fresh results
+      setBenchmark(res.data);
+      setBenchmarkMsg({
+        type: "ok",
+        text: "Benchmark updated with latest log data.",
+      });
+    } catch (err) {
+      if (err.response?.status === 401) return handleUnauthorized();
+      const detail =
+        err.response?.data?.message || err.message || "Unknown error";
+      setBenchmarkMsg({ type: "err", text: `Benchmark failed: ${detail}` });
+    } finally {
+      setBenchmarkRunning(false);
+      setTimeout(() => setBenchmarkMsg(null), 8000);
+    }
+  };
   const showMlMsg = (type, text) => {
     setMlActionMsg({ type, text });
     setTimeout(() => setMlActionMsg(null), 6000);
@@ -309,7 +335,11 @@ const CacheDashboard = () => {
     ? Object.keys(benchmark.capacity_results[String(CAPACITIES[0])])
     : [];
 
-  const SUMMARY_CAP = "50";
+  // Use the largest available capacity for the summary cards.
+  // benchmark.py now tests [5, 8, 10, 20] by default (was [10,20,30,50]).
+  const SUMMARY_CAP = CAPACITIES.length
+    ? String(Math.max(...CAPACITIES))
+    : "20";
   const summaryData = benchmark?.capacity_results?.[SUMMARY_CAP];
 
   const strategyStyle = (name) => {
@@ -505,18 +535,40 @@ const CacheDashboard = () => {
             </div>
           ) : (
             <>
-              <div>
-                <h2 className="font-semibold text-lg">
-                  Eviction Strategy Comparison — LRU vs LFU vs LightCache (ML)
-                </h2>
-                <p className="text-xs text-gray-500 mt-1">
-                  Trace-driven simulation on{" "}
-                  {benchmark.total_records?.toLocaleString()} real cache events
-                  · Generated{" "}
-                  {benchmark.generated_at
-                    ? new Date(benchmark.generated_at).toLocaleString()
-                    : "—"}
-                </p>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="font-semibold text-lg">
+                    Eviction Strategy Comparison — LRU vs LFU vs LightCache (ML)
+                  </h2>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Trace-driven simulation on{" "}
+                    {benchmark.total_records?.toLocaleString()} real cache
+                    events · Generated{" "}
+                    {benchmark.generated_at
+                      ? new Date(benchmark.generated_at).toLocaleString()
+                      : "—"}
+                  </p>
+                </div>
+                <div className="flex flex-col items-end gap-1 shrink-0">
+                  <button
+                    onClick={handleRunBenchmark}
+                    disabled={benchmarkRunning}
+                    className="text-sm px-3 py-1.5 rounded border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-50 whitespace-nowrap"
+                  >
+                    {benchmarkRunning ? "Running…" : "Re-run Benchmark"}
+                  </button>
+                  {benchmarkMsg && (
+                    <p
+                      className={`text-xs ${
+                        benchmarkMsg.type === "ok"
+                          ? "text-green-600"
+                          : "text-red-500"
+                      }`}
+                    >
+                      {benchmarkMsg.text}
+                    </p>
+                  )}
+                </div>
               </div>
 
               {/* Strategy summary cards at capacity=50 */}
@@ -568,11 +620,33 @@ const CacheDashboard = () => {
                           </div>
                           <div className="flex justify-between">
                             <span className="text-sm text-gray-500">
-                              TTL Accuracy
+                              Eviction Waste
                             </span>
-                            <span className="text-sm font-medium">
-                              {d?.ttl_accuracy}%
-                            </span>
+                            {(() => {
+                              const eq =
+                                benchmark?.eviction_quality?.[SUMMARY_CAP]?.[
+                                  name
+                                ];
+                              const waste = eq?.eviction_waste_pct ?? null;
+                              const allWastes = STRATEGIES.map(
+                                (n) =>
+                                  benchmark?.eviction_quality?.[SUMMARY_CAP]?.[
+                                    n
+                                  ]?.eviction_waste_pct ?? Infinity,
+                              );
+                              const bestWaste = Math.min(...allWastes);
+                              return (
+                                <span
+                                  className={`text-sm font-medium ${
+                                    waste !== null && waste === bestWaste
+                                      ? "text-green-600 font-bold"
+                                      : ""
+                                  }`}
+                                >
+                                  {waste !== null ? `${waste}%` : "—"}
+                                </span>
+                              );
+                            })()}
                           </div>
                         </div>
                       </div>
@@ -586,8 +660,9 @@ const CacheDashboard = () => {
                 <div className="px-4 py-3 bg-gray-50 border-b">
                   <h2 className="font-semibold">Hit Rate by Cache Capacity</h2>
                   <p className="text-xs text-gray-500 mt-1">
-                    LightCache uses ML-predicted TTL — holding high-value items
-                    in cache longer.
+                    LightCache uses ML eviction scores — evicting low-demand
+                    keys first. Differences are most visible at low capacities
+                    (5–10 keys) where pressure is highest.
                   </p>
                 </div>
                 <table className="w-full text-sm">
@@ -654,7 +729,7 @@ const CacheDashboard = () => {
                 <div className="border rounded-lg overflow-hidden">
                   <div className="px-4 py-3 bg-gray-50 border-b">
                     <h2 className="font-semibold">
-                      Hit Rate by Route (capacity = 50 keys)
+                      Hit Rate by Route (capacity = {SUMMARY_CAP} keys)
                     </h2>
                   </div>
                   <table className="w-full text-sm">
@@ -746,6 +821,82 @@ const CacheDashboard = () => {
                   </tbody>
                 </table>
               </div>
+              {/* Eviction quality — new metric from fixed benchmark */}
+              {benchmark?.eviction_quality && (
+                <div className="border rounded-lg overflow-hidden">
+                  <div className="px-4 py-3 bg-gray-50 border-b">
+                    <h2 className="font-semibold">
+                      Eviction Quality by Capacity
+                    </h2>
+                    <p className="text-xs text-gray-500 mt-1">
+                      <strong>Lower waste% is better.</strong> Waste% = % of
+                      evictions where a high-demand key (score &gt; 120) was
+                      dropped. LightCache should evict only low-score keys;
+                      LRU/LFU evict without demand awareness.
+                    </p>
+                  </div>
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50 text-gray-500">
+                      <tr>
+                        <th className="px-4 py-2 text-left">Capacity</th>
+                        {STRATEGIES.map((s) => (
+                          <th key={s} className="px-4 py-2 text-left">
+                            {s} Waste%
+                          </th>
+                        ))}
+                        <th className="px-4 py-2 text-left">ML vs LRU Δ</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {CAPACITIES.map((cap) => {
+                        const row = benchmark.eviction_quality[String(cap)];
+                        if (!row) return null;
+                        const allWastes = STRATEGIES.map(
+                          (s) => row[s]?.eviction_waste_pct ?? Infinity,
+                        );
+                        const bestWaste = Math.min(...allWastes);
+                        const mlWaste =
+                          row["ML (LightCache)"]?.eviction_waste_pct ?? 0;
+                        const lruWaste = row["LRU"]?.eviction_waste_pct ?? 0;
+                        const delta = (lruWaste - mlWaste).toFixed(1);
+                        return (
+                          <tr key={cap} className="border-t">
+                            <td className="px-4 py-2 font-medium">{cap}</td>
+                            {STRATEGIES.map((name) => {
+                              const w = row[name]?.eviction_waste_pct ?? 0;
+                              return (
+                                <td key={name} className="px-4 py-2">
+                                  <span
+                                    className={
+                                      w === bestWaste
+                                        ? "text-green-600 font-bold"
+                                        : ""
+                                    }
+                                  >
+                                    {w}%
+                                  </span>
+                                </td>
+                              );
+                            })}
+                            <td className="px-4 py-2">
+                              <span
+                                className={
+                                  parseFloat(delta) > 0
+                                    ? "text-green-600 font-medium"
+                                    : "text-red-500"
+                                }
+                              >
+                                {parseFloat(delta) >= 0 ? "+" : ""}
+                                {delta}%
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </>
           )}
         </div>
