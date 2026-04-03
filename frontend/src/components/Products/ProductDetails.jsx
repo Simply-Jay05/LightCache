@@ -13,9 +13,9 @@ const ProductDetails = ({ productId }) => {
   const { id } = useParams();
   const dispatch = useDispatch();
   const { selectedProduct, loading, error, similarProducts } = useSelector(
-    (state) => state.products,
+    (s) => s.products,
   );
-  const { user, guestId } = useSelector((state) => state.auth);
+  const { user, guestId } = useSelector((s) => s.auth);
   const [mainImage, setMainImage] = useState(null);
   const [selectedSize, setSelectedSize] = useState("");
   const [selectedColor, setSelectedColor] = useState("");
@@ -32,14 +32,13 @@ const ProductDetails = ({ productId }) => {
   }, [dispatch, productFetchId]);
 
   useEffect(() => {
-    if (selectedProduct?.images?.length > 0) {
+    if (selectedProduct?.images?.length > 0)
       setMainImage(selectedProduct.images[0].url);
-    }
   }, [selectedProduct]);
 
   const handleQuantityChange = (action) => {
-    if (action === "plus") setQuantity((prev) => prev + 1);
-    if (action === "minus" && quantity > 1) setQuantity((prev) => prev - 1);
+    if (action === "plus") setQuantity((p) => p + 1);
+    if (action === "minus" && quantity > 1) setQuantity((p) => p - 1);
   };
 
   const handleAddToCart = () => {
@@ -49,9 +48,7 @@ const ProductDetails = ({ productId }) => {
       });
       return;
     }
-
     setIsButtonDisabled(true);
-
     dispatch(
       addToCart({
         productId: productFetchId,
@@ -62,52 +59,43 @@ const ProductDetails = ({ productId }) => {
         userId: user?._id,
       }),
     )
-      .then(() => {
-        toast.success("Product added to cart!", {
-          duration: 1000,
-        });
-      })
-      .finally(() => {
-        setIsButtonDisabled(false);
-      });
+      .then(() => toast.success("Product added to cart!", { duration: 1000 }))
+      .finally(() => setIsButtonDisabled(false));
   };
 
   if (loading) {
     return (
       <div className="p-6 max-w-6xl mx-auto">
-        <div className="flex flex-col md:flex-row gap-8 animate-pulse">
-          {/* Image skeleton */}
-          <div className="md:w-1/2 bg-gray-200 rounded-lg h-[500px]" />
-          {/* Info skeleton */}
+        <div className="flex flex-col md:flex-row gap-10 animate-pulse">
+          <div
+            className="md:w-1/2 skeleton"
+            style={{ height: "520px", borderRadius: "2px" }}
+          />
           <div className="md:w-1/2 space-y-4 pt-4">
-            <div className="h-8 bg-gray-200 rounded w-3/4" />
-            <div className="h-6 bg-gray-200 rounded w-1/4" />
-            <div className="h-4 bg-gray-200 rounded w-full" />
-            <div className="h-4 bg-gray-200 rounded w-5/6" />
-            <div className="h-4 bg-gray-200 rounded w-4/6" />
-            <div className="flex gap-2 mt-4">
-              {[...Array(4)].map((_, i) => (
-                <div key={i} className="w-8 h-8 rounded-full bg-gray-200" />
-              ))}
-            </div>
-            <div className="flex gap-2 mt-2">
-              {[...Array(4)].map((_, i) => (
-                <div key={i} className="w-16 h-10 rounded bg-gray-200" />
-              ))}
-            </div>
-            <div className="h-12 bg-gray-200 rounded w-full mt-4" />
+            {[
+              ["3/4", "h-8"],
+              ["1/4", "h-6"],
+              ["full", "h-4"],
+              ["5/6", "h-4"],
+              ["4/6", "h-4"],
+            ].map(([w, h], i) => (
+              <div key={i} className={`skeleton ${h} w-${w}`} />
+            ))}
           </div>
         </div>
       </div>
     );
   }
+
   if (error) {
     return (
       <div className="text-center py-16">
-        <p className="text-red-500 mb-4">Failed to load product details.</p>
+        <p style={{ color: "#c0392b", marginBottom: "1rem" }}>
+          Failed to load product details.
+        </p>
         <button
           onClick={() => window.location.reload()}
-          className="bg-black text-white px-6 py-2 rounded hover:bg-gray-800"
+          className="btn-primary"
         >
           Try Again
         </button>
@@ -115,89 +103,200 @@ const ProductDetails = ({ productId }) => {
     );
   }
 
+  const qtyBtn = {
+    width: "2rem",
+    height: "2rem",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    border: "1px solid rgba(15,17,23,0.15)",
+    borderRadius: "2px",
+    fontSize: "1rem",
+    background: "transparent",
+    cursor: "pointer",
+    color: "var(--ink)",
+    transition: "border-color 0.2s",
+  };
+
   return (
-    <div className="p-6">
+    <div className="py-10 px-4">
       {selectedProduct && (
-        <div className="max-w-6xl mx-auto bg-white p-8 rounded-lg">
-          <div className="flex flex-col md:flex-row">
-            {/* Left Thumbnails */}
-            <div className="hidden md:flex flex-col space-y-4 mr-6">
-              {selectedProduct.images.map((image, index) => (
+        <div className="max-w-6xl mx-auto">
+          <div className="flex flex-col md:flex-row gap-10">
+            {/* Thumbnails — desktop */}
+            <div className="hidden md:flex flex-col space-y-3">
+              {selectedProduct.images.map((image, i) => (
                 <img
-                  key={index}
+                  key={i}
                   src={image.url}
-                  alt={image.altText || `Thumbnail ${index}`}
-                  className={`w-20 h-20 object-cover rounded-lg cursor-pointer border ${mainImage === image.url ? "border-black" : "border-gray-300"}`}
+                  alt={image.altText || `Thumbnail ${i}`}
                   onClick={() => setMainImage(image.url)}
-                />
-              ))}
-            </div>
-            {/* Main Image */}
-            <div className="md:w-1/2">
-              <div className="mb-4">
-                <img
-                  src={mainImage}
-                  alt="Main Product"
-                  className="w-full h-auto object-cover rounded-lg"
-                />
-              </div>
-            </div>
-            {/* Mobile Thumbnail */}
-            <div className="md:hidden flex overflow-x-scroll space-x-4 mb-4">
-              {selectedProduct.images.map((image, index) => (
-                <img
-                  key={index}
-                  src={image.url}
-                  alt={image.altText || `Thumbnail ${index}`}
-                  className={`w-20 h-20 object-cover rounded-lg cursor-pointer border ${mainImage === image.url ? "border-black" : "border-gray-300"}`}
-                  onClick={() => setMainImage(image.url)}
+                  className="object-cover cursor-pointer transition-all duration-200"
+                  style={{
+                    width: "72px",
+                    height: "72px",
+                    borderRadius: "2px",
+                    border: `1px solid ${mainImage === image.url ? "var(--gold)" : "rgba(15,17,23,0.12)"}`,
+                    opacity: mainImage === image.url ? 1 : 0.65,
+                  }}
                 />
               ))}
             </div>
 
-            {/* Right Section */}
-            <div className="md:w-1/2 md:ml-10">
-              <h1 className="text-2xl md:text-3xl font-semibold mb-2">
+            {/* Main image */}
+            <div className="md:w-1/2">
+              <img
+                src={mainImage}
+                alt="Main Product"
+                className="w-full object-cover"
+                style={{ borderRadius: "2px", maxHeight: "620px" }}
+              />
+              {/* Mobile thumbnails */}
+              <div className="md:hidden flex overflow-x-auto space-x-3 mt-3">
+                {selectedProduct.images.map((image, i) => (
+                  <img
+                    key={i}
+                    src={image.url}
+                    alt={image.altText || `Thumb ${i}`}
+                    onClick={() => setMainImage(image.url)}
+                    className="object-cover cursor-pointer flex-shrink-0"
+                    style={{
+                      width: "64px",
+                      height: "64px",
+                      borderRadius: "2px",
+                      border: `1px solid ${mainImage === image.url ? "var(--gold)" : "rgba(15,17,23,0.12)"}`,
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {/* Right — details */}
+            <div className="md:w-1/2">
+              <h1
+                className="font-serif font-normal mb-3"
+                style={{
+                  fontFamily: "var(--ff-serif)",
+                  fontSize: "clamp(1.5rem, 3vw, 2rem)",
+                  color: "var(--ink)",
+                  lineHeight: 1.2,
+                }}
+              >
                 {selectedProduct.name}
               </h1>
 
-              <p className="text-lg text-gray-600 mb-1 line-through">
-                {selectedProduct.originalPrice &&
-                  `${selectedProduct.originalPrice}`}
+              {selectedProduct.originalPrice && (
+                <p
+                  style={{
+                    color: "var(--muted)",
+                    fontSize: "0.85rem",
+                    textDecoration: "line-through",
+                    marginBottom: "0.25rem",
+                  }}
+                >
+                  ${selectedProduct.originalPrice}
+                </p>
+              )}
+              <p
+                style={{
+                  color: "var(--gold)",
+                  fontSize: "1.25rem",
+                  fontWeight: 500,
+                  marginBottom: "1.25rem",
+                }}
+              >
+                ${selectedProduct.price}
               </p>
-              <p className="text-xl text-gray-500 mb-2">
-                $ {selectedProduct.price}
-              </p>
-              <p className="text-gray-600 mb-4">
+              <p
+                style={{
+                  color: "var(--muted)",
+                  fontSize: "0.875rem",
+                  lineHeight: 1.8,
+                  marginBottom: "1.75rem",
+                }}
+              >
                 {selectedProduct.description}
               </p>
-              <div className="mb-4">
-                <div className="text-gray-700">Color:</div>
-                <div className="flex gap-2 mt-2">
+
+              <hr className="divider-gold mb-6" />
+
+              {/* Color */}
+              <div className="mb-5">
+                <p
+                  style={{
+                    color: "var(--ink)",
+                    fontSize: "0.72rem",
+                    letterSpacing: "0.12em",
+                    textTransform: "uppercase",
+                    fontWeight: 500,
+                    marginBottom: "0.75rem",
+                  }}
+                >
+                  Color
+                </p>
+                <div className="flex gap-2">
                   {selectedProduct.colors.map((color) => (
                     <button
                       key={color}
                       onClick={() => setSelectedColor(color)}
-                      className={`w-8 h-8 rounded-full border ${selectedColor === color ? "border-4 border-black" : "border-gray-300"}`}
                       style={{
-                        backgroundColor:
-                          color.toLocaleLowerCase() ||
-                          color.split(" ").toLocaleLowerCase(),
-                        filter: "brightness(0.5)",
+                        width: "2rem",
+                        height: "2rem",
+                        borderRadius: "50%",
+                        backgroundColor: color.toLowerCase(),
+                        filter: "brightness(0.6)",
+                        border:
+                          selectedColor === color
+                            ? "2px solid var(--gold)"
+                            : "2px solid rgba(15,17,23,0.15)",
+                        cursor: "pointer",
+                        transition: "border-color 0.2s",
+                        outline:
+                          selectedColor === color
+                            ? "1px solid var(--gold)"
+                            : "none",
+                        outlineOffset: "2px",
                       }}
-                    ></button>
+                    />
                   ))}
                 </div>
               </div>
 
-              <div className="mb-4">
-                <p className="text-gray-700">Size:</p>
-                <div className="flex gap-2 mt-2">
+              {/* Size */}
+              <div className="mb-5">
+                <p
+                  style={{
+                    color: "var(--ink)",
+                    fontSize: "0.72rem",
+                    letterSpacing: "0.12em",
+                    textTransform: "uppercase",
+                    fontWeight: 500,
+                    marginBottom: "0.75rem",
+                  }}
+                >
+                  Size
+                </p>
+                <div className="flex gap-2 flex-wrap">
                   {selectedProduct.sizes.map((size) => (
                     <button
                       key={size}
                       onClick={() => setSelectedSize(size)}
-                      className={`px-4 py-2 rounded border ${selectedSize === size ? "bg-black text-white" : ""} `}
+                      style={{
+                        padding: "0.375rem 0.875rem",
+                        fontSize: "0.75rem",
+                        fontFamily: "var(--ff-sans)",
+                        border: `1px solid ${selectedSize === size ? "var(--ink)" : "rgba(15,17,23,0.18)"}`,
+                        borderRadius: "2px",
+                        background:
+                          selectedSize === size ? "var(--ink)" : "transparent",
+                        color:
+                          selectedSize === size
+                            ? "var(--parchment)"
+                            : "var(--ink)",
+                        cursor: "pointer",
+                        transition: "all 0.15s",
+                        fontWeight: 500,
+                      }}
                     >
                       {size}
                     </button>
@@ -205,19 +304,40 @@ const ProductDetails = ({ productId }) => {
                 </div>
               </div>
 
-              <div className="mb-6">
-                <p className="text-gray-700">Quantity:</p>
-                <div className="flex items-center space-x-4 mt-2">
+              {/* Quantity */}
+              <div className="mb-7">
+                <p
+                  style={{
+                    color: "var(--ink)",
+                    fontSize: "0.72rem",
+                    letterSpacing: "0.12em",
+                    textTransform: "uppercase",
+                    fontWeight: 500,
+                    marginBottom: "0.75rem",
+                  }}
+                >
+                  Quantity
+                </p>
+                <div className="flex items-center gap-4">
                   <button
                     onClick={() => handleQuantityChange("minus")}
-                    className="px-2 py-1 bg-gray-200 rounded text-lg"
+                    style={qtyBtn}
                   >
-                    -
+                    −
                   </button>
-                  <span className="text-lg">{quantity}</span>
+                  <span
+                    style={{
+                      fontSize: "0.95rem",
+                      fontWeight: 500,
+                      minWidth: "1.5rem",
+                      textAlign: "center",
+                    }}
+                  >
+                    {quantity}
+                  </span>
                   <button
                     onClick={() => handleQuantityChange("plus")}
-                    className="px-2 py-1 bg-gray-200 rounded text-lg"
+                    style={qtyBtn}
                   >
                     +
                   </button>
@@ -227,32 +347,72 @@ const ProductDetails = ({ productId }) => {
               <button
                 onClick={handleAddToCart}
                 disabled={isButtonDisabled}
-                className={`bg-black text-white py-2 px-6 rounded w-full mb-4 ${isButtonDisabled ? "cursor-not-allowed opacity-50" : "hover:bg-gray-900"}`}
+                className="btn-primary w-full mb-6"
               >
-                {isButtonDisabled ? "Adding..." : "ADD TO CART"}
+                {isButtonDisabled ? "Adding…" : "Add to Cart"}
               </button>
 
-              <div className="mt-10 text-gray-700">
-                <h3 className="text-xl font-bold mb-4">Characteristics:</h3>
-                <table className="w-full text-left text-sm text-gray-600">
+              {/* Characteristics */}
+              <div
+                style={{
+                  borderTop: "1px solid rgba(15,17,23,0.08)",
+                  paddingTop: "1.5rem",
+                }}
+              >
+                <p
+                  style={{
+                    color: "var(--ink)",
+                    fontSize: "0.72rem",
+                    letterSpacing: "0.12em",
+                    textTransform: "uppercase",
+                    fontWeight: 500,
+                    marginBottom: "1rem",
+                  }}
+                >
+                  Details
+                </p>
+                <table style={{ width: "100%", fontSize: "0.82rem" }}>
                   <tbody>
-                    <tr>
-                      <td className="py-1">Brand</td>
-                      <td className="py-1">{selectedProduct.brand}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-1">Material</td>
-                      <td className="py-1">{selectedProduct.material}</td>
-                    </tr>
+                    {[
+                      ["Brand", selectedProduct.brand],
+                      ["Material", selectedProduct.material],
+                    ].map(([k, v]) => (
+                      <tr
+                        key={k}
+                        style={{
+                          borderBottom: "1px solid rgba(15,17,23,0.07)",
+                        }}
+                      >
+                        <td
+                          style={{
+                            padding: "0.5rem 0",
+                            color: "var(--muted)",
+                            width: "40%",
+                          }}
+                        >
+                          {k}
+                        </td>
+                        <td
+                          style={{ padding: "0.5rem 0", color: "var(--ink)" }}
+                        >
+                          {v}
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
             </div>
           </div>
-          <div className="mt-20">
-            <h2 className="text-2xl text-center font-medium mb-4">
-              You May Also Like
-            </h2>
+
+          {/* Similar products */}
+          <div className="mt-24">
+            <div className="flex items-center gap-8 mb-10">
+              <p className="section-label whitespace-nowrap">
+                You May Also Like
+              </p>
+              <hr className="divider-gold flex-1" />
+            </div>
             <ProductGrid
               products={similarProducts}
               loading={loading}

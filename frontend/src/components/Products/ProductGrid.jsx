@@ -5,10 +5,13 @@ const ProductGrid = ({ products, loading, error }) => {
     return (
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
         {[...Array(8)].map((_, i) => (
-          <div key={i} className="bg-white p-4 rounded-lg">
-            <div className="w-full h-96 bg-gray-200 rounded-lg animate-pulse mb-4" />
-            <div className="h-4 bg-gray-200 rounded animate-pulse mb-2 w-3/4" />
-            <div className="h-4 bg-gray-200 rounded animate-pulse w-1/4" />
+          <div key={i}>
+            <div
+              className="skeleton w-full"
+              style={{ height: "360px", borderRadius: "2px" }}
+            />
+            <div className="skeleton mt-3 h-4 w-3/4" />
+            <div className="skeleton mt-2 h-4 w-1/4" />
           </div>
         ))}
       </div>
@@ -18,33 +21,59 @@ const ProductGrid = ({ products, loading, error }) => {
   if (error) {
     return (
       <div className="text-center py-12">
-        <p className="text-red-500 mb-4">{error}</p>
+        <p style={{ color: "#c0392b", marginBottom: "1rem" }}>{error}</p>
         <button
           onClick={() => window.location.reload()}
-          className="bg-black text-white px-6 py-2 rounded hover:bg-gray-800"
+          className="btn-primary"
         >
           Try Again
         </button>
       </div>
     );
   }
+
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
       {products.map((product, index) => (
-        <Link key={index} to={`/product/${product._id}`} className="block">
-          <div className="bg-white p-4 rounded-lg">
-            <div className="w-full h-96 mb-4">
-              <img
-                src={product.images[0].url}
-                alt={product.images[0].alText || product.name}
-                className="w-full h-full object-cover rounded-lg "
-              />
-            </div>
-            <h3 className="text-sm mb-">{product.name}</h3>
-            <p className="text-gray-500 font-medium text-sm tracking-tighter">
-              $ {product.price}
-            </p>
+        <Link
+          key={index}
+          to={`/product/${product._id}`}
+          style={{ textDecoration: "none" }}
+          className="card-lift block group"
+        >
+          {/* Image */}
+          <div
+            className="overflow-hidden mb-3"
+            style={{ borderRadius: "2px", background: "var(--parchment-dark)" }}
+          >
+            <img
+              src={product.images[0].url}
+              alt={product.images[0].altText || product.name}
+              className="w-full object-cover transition-transform duration-500 group-hover:scale-105"
+              style={{ height: "340px" }}
+            />
           </div>
+          {/* Info */}
+          <h3
+            style={{
+              color: "var(--ink)",
+              fontSize: "0.85rem",
+              fontWeight: 400,
+              marginBottom: "0.25rem",
+              fontFamily: "var(--ff-sans)",
+            }}
+          >
+            {product.name}
+          </h3>
+          <p
+            style={{
+              color: "var(--gold)",
+              fontSize: "0.82rem",
+              fontWeight: 500,
+            }}
+          >
+            ${product.price}
+          </p>
         </Link>
       ))}
     </div>

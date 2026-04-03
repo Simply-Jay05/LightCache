@@ -1,9 +1,238 @@
 @import "tailwindcss";
+@import url("https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap");
 
-#root {
-  font-family: "Inter", sans-serif;
-  font-optical-sizing: auto;
-  font-style: normal;
+/* Design tokens */
+:root {
+  --ink:       #0f1117;
+  --ink-soft:  #1e2130;
+  --parchment: #f5f0e8;
+  --parchment-dark: #ede7d9;
+  --gold:      #c9a84c;
+  --gold-light:#e2c97e;
+  --muted:     #8a8070;
+  --border:    rgba(201,168,76,0.18);
+  --radius-sm: 2px;
+  --radius-md: 6px;
+  --ff-serif:  "Playfair Display", Georgia, serif;
+  --ff-sans:   "DM Sans", system-ui, sans-serif;
 }
 
+/* Base */
+#root {
+  font-family: var(--ff-sans);
+  font-optical-sizing: auto;
+  background-color: var(--parchment);
+  color: var(--ink);
+}
 
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--parchment-dark); }
+::-webkit-scrollbar-thumb { background: var(--gold); border-radius: 3px; }
+
+/* Typography helpers */
+.font-serif   { font-family: var(--ff-serif); }
+.font-sans    { font-family: var(--ff-sans); }
+.text-gold    { color: var(--gold); }
+.text-muted   { color: var(--muted); }
+.text-ink     { color: var(--ink); }
+.text-parchment { color: var(--parchment); }
+.bg-ink       { background-color: var(--ink); }
+.bg-ink-soft  { background-color: var(--ink-soft); }
+.bg-parchment { background-color: var(--parchment); }
+.bg-gold      { background-color: var(--gold); }
+.border-gold  { border-color: var(--border); }
+
+/* Refined button styles */
+.btn-primary {
+  background-color: var(--ink);
+  color: var(--parchment);
+  font-family: var(--ff-sans);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 0.75rem 2rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--ink);
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+  cursor: pointer;
+}
+.btn-primary:hover {
+  background-color: var(--gold);
+  border-color: var(--gold);
+  color: var(--ink);
+}
+.btn-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-outline {
+  background-color: transparent;
+  color: var(--parchment);
+  font-family: var(--ff-sans);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 0.75rem 2rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(245,240,232,0.35);
+  transition: border-color 0.2s, color 0.2s;
+  cursor: pointer;
+}
+.btn-outline:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
+/* Input styles */
+.input-base {
+  background: transparent;
+  border: 1px solid rgba(15,17,23,0.2);
+  border-radius: var(--radius-sm);
+  padding: 0.625rem 0.875rem;
+  font-family: var(--ff-sans);
+  font-size: 0.875rem;
+  color: var(--ink);
+  width: 100%;
+  transition: border-color 0.2s;
+}
+.input-base:focus {
+  outline: none;
+  border-color: var(--gold);
+}
+.input-base::placeholder { color: var(--muted); }
+
+/* Skeleton pulse */
+@keyframes shimmer {
+  0%   { opacity: 0.4; }
+  50%  { opacity: 0.7; }
+  100% { opacity: 0.4; }
+}
+.skeleton { animation: shimmer 1.6s ease-in-out infinite; background: var(--parchment-dark); border-radius: var(--radius-sm); }
+
+/* Nav link underline animation */
+.nav-link {
+  position: relative;
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink);
+  text-decoration: none;
+  padding-bottom: 2px;
+}
+.nav-link::after {
+  content: "";
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  width: 0;
+  height: 1px;
+  background: var(--gold);
+  transition: width 0.25s ease;
+}
+.nav-link:hover::after { width: 100%; }
+
+/* Gold divider */
+.divider-gold {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0;
+}
+
+/* Section label */
+.section-label {
+  font-family: var(--ff-sans);
+  font-size: 1rem;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+
+/* Card hover lift */
+.card-lift {
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+.card-lift:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 32px rgba(15,17,23,0.1);
+}
+
+/* Mobile nav drawer */
+.nav-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15,17,23,0.5);
+  z-index: 40;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s;
+}
+.nav-drawer-overlay.open {
+  opacity: 1;
+  pointer-events: all;
+}
+
+/* Admin scope reset */
+.admin-root {
+  background-color: #f9fafb !important; /* Tailwind gray-50 — original admin bg */
+  font-family: ui-sans-serif, system-ui, sans-serif !important;
+  color: #111827 !important;            /* Tailwind gray-900 */
+}
+
+/* Content area inside admin: white cards, normal gray text */
+.admin-root .flex-grow {
+  background-color: #f3f4f6;            /* gray-100 — matches original Tailwind bg */
+}
+
+/* Make sure skeleton/pulse resets don't use parchment */
+.admin-root .skeleton {
+  background: #e5e7eb !important;       /* gray-200 */
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+/* Inputs inside admin use standard styling */
+.admin-root input,
+.admin-root select,
+.admin-root textarea {
+  background-color: #ffffff !important;
+  color: #111827 !important;
+  border-color: #d1d5db !important;     /* gray-300 */
+  font-family: ui-sans-serif, system-ui, sans-serif !important;
+}
+.admin-root input:focus,
+.admin-root select:focus,
+.admin-root textarea:focus {
+  border-color: #6b7280 !important;     /* gray-500 */
+  outline: none;
+}
+
+/* Cards in admin stay white */
+.admin-root .shadow-md,
+.admin-root .rounded-lg {
+  background-color: #ffffff;
+}
+
+/* Table hover stays gray-50 */
+.admin-root .hover\:bg-gray-50:hover {
+  background-color: #f9fafb !important;
+}
+.admin-root .bg-gray-100 {
+  background-color: #f3f4f6 !important;
+}
+
+/* btn-primary inside admin: revert to pure black (no gold hover) */
+.admin-root .btn-primary {
+  background-color: #111827 !important;
+  color: #ffffff !important;
+  border-color: #111827 !important;
+}
+.admin-root .btn-primary:hover {
+  background-color: #1f2937 !important;
+  border-color: #1f2937 !important;
+  color: #ffffff !important;
+}

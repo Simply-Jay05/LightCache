@@ -1419,67 +1419,6 @@ const CacheDashboard = () => {
               </div>
             </div>
           </div>
-
-          {/* Lifecycle guide */}
-          <div className="border rounded-lg overflow-hidden">
-            <div className="px-4 py-3 bg-gray-50 border-b">
-              <h2 className="font-semibold">Deployment lifecycle</h2>
-            </div>
-            <div className="p-4">
-              <ol className="space-y-3 text-sm">
-                {[
-                  {
-                    step: "1",
-                    title: "Deploy — plain Redis mode",
-                    desc: "System starts in plain Redis mode. All caching uses fixed TTLs. The system silently collects real traffic events in the background.",
-                    done: true,
-                  },
-                  {
-                    step: "2",
-                    title: "Collect real traffic (~1 week)",
-                    desc: `Traffic events are logged to cache_events.jsonl. Watch the data readiness bar above. Target: ${mlReadiness?.min_rows?.toLocaleString() ?? "1,000"} rows.`,
-                    done: (mlReadiness?.row_count ?? 0) > 0,
-                  },
-                  {
-                    step: "3",
-                    title: "Optional: simulate if data is thin",
-                    desc: "If after a week you're still below threshold, use 'Simulate from real data' to augment with synthetic rows based on your actual traffic distribution.",
-                    done: false,
-                  },
-                  {
-                    step: "4",
-                    title: "Train the model",
-                    desc: "Click 'Train model now'. Takes 1–3 minutes. Model hot-reloads with zero downtime.",
-                    done: mlReadiness?.model_exists,
-                  },
-                  {
-                    step: "5",
-                    title: "Activate ML mode",
-                    desc: "Switch to ML Active above. The system now uses dynamic TTL predictions on every cache miss. Monitor hit rate in the Overview tab.",
-                    done: mlMode === "ml_active",
-                  },
-                ].map((item) => (
-                  <li key={item.step} className="flex gap-3">
-                    <span
-                      className={`shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold mt-0.5 ${
-                        item.done
-                          ? "bg-green-500 text-white"
-                          : "bg-gray-200 text-gray-600"
-                      }`}
-                    >
-                      {item.done ? "✓" : item.step}
-                    </span>
-                    <div>
-                      <p className="font-medium text-gray-800">{item.title}</p>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        {item.desc}
-                      </p>
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          </div>
         </div>
       )}
     </div>

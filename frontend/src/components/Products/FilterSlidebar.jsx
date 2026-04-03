@@ -14,11 +14,9 @@ const FilterSlidebar = () => {
     minPrice: 0,
     maxPrice: 100,
   });
-
   const [priceRange, setPriceRange] = useState([0, 100]);
 
   const categories = ["Top Wear", "Bottom Wear"];
-
   const colors = [
     "Red",
     "Blue",
@@ -30,10 +28,9 @@ const FilterSlidebar = () => {
     "Pink",
     "Beige",
     "Navy",
+    "Brown",
   ];
-
   const sizes = ["XS", "S", "M", "L", "XL", "XXL"];
-
   const materials = [
     "Cotton",
     "Wool",
@@ -44,7 +41,6 @@ const FilterSlidebar = () => {
     "Viscose",
     "Fleece",
   ];
-
   const brands = [
     "Urban Threads",
     "Modern Fit",
@@ -53,12 +49,10 @@ const FilterSlidebar = () => {
     "Fashionista",
     "ChicStyle",
   ];
-
   const genders = ["Men", "Women"];
 
   useEffect(() => {
     const params = Object.fromEntries([...searchParams]);
-
     setFilters({
       category: params.category || "",
       gender: params.gender || "",
@@ -72,17 +66,13 @@ const FilterSlidebar = () => {
     setPriceRange([0, params.maxPrice || 100]);
   }, [searchParams]);
 
-  // Function to handle filter change
   const handleFilterChange = (e) => {
     const { name, value, checked, type } = e.target;
     let newFilters = { ...filters };
-
     if (type === "checkbox") {
-      if (checked) {
-        newFilters[name] = [...(newFilters[name] || []), value]; // ["XS", "S"]
-      } else {
-        newFilters[name] = newFilters[name].filter((item) => item !== value);
-      }
+      newFilters[name] = checked
+        ? [...(newFilters[name] || []), value]
+        : newFilters[name].filter((item) => item !== value);
     } else {
       newFilters[name] = value;
     }
@@ -92,7 +82,6 @@ const FilterSlidebar = () => {
 
   const updateURLParams = (newFilters) => {
     const params = new URLSearchParams();
-    // {category: "Top Wear", size: ["XS", ""]}
     Object.keys(newFilters).forEach((key) => {
       if (Array.isArray(newFilters[key]) && newFilters[key].length > 0) {
         params.append(key, newFilters[key].join(","));
@@ -101,60 +90,109 @@ const FilterSlidebar = () => {
       }
     });
     setSearchParams(params);
-    navigate(`?${params.toString()}`); // ?category=Bottom+Wear&size=XS%2CS
+    navigate(`?${params.toString()}`);
   };
 
   const handlePriceChange = (e) => {
     const newPrice = e.target.value;
     setPriceRange([0, newPrice]);
-    const newFilters = { ...filters, minPrice: 0, maxPrice: newPrice };
-    setFilters(filters);
-    updateURLParams(newFilters);
+    updateURLParams({ ...filters, minPrice: 0, maxPrice: newPrice });
+  };
+
+  // ── Style helpers ───────────────────────────────────────────────
+  const labelStyle = {
+    display: "block",
+    fontSize: "0.65rem",
+    fontWeight: 500,
+    letterSpacing: "0.16em",
+    textTransform: "uppercase",
+    color: "var(--gold)",
+    marginBottom: "0.75rem",
+    fontFamily: "var(--ff-sans)",
+  };
+
+  const radioCheckStyle = {
+    accentColor: "var(--gold)",
+    width: "14px",
+    height: "14px",
+    cursor: "pointer",
+    flexShrink: 0,
+  };
+
+  const optionLabelStyle = {
+    fontSize: "0.82rem",
+    color: "var(--ink)",
+    cursor: "pointer",
+    fontFamily: "var(--ff-sans)",
+  };
+
+  const sectionStyle = {
+    marginBottom: "1.75rem",
+    paddingBottom: "1.75rem",
+    borderBottom: "1px solid rgba(15,17,23,0.07)",
   };
 
   return (
-    <div className="p-4">
-      <h3 className="text-xl font-medium text-gray-800 mb-4">Filter</h3>
+    <div
+      style={{
+        padding: "1.5rem",
+        background: "var(--parchment)",
+        borderRight: "1px solid rgba(15,17,23,0.07)",
+        minHeight: "100%",
+      }}
+    >
+      <h3
+        style={{
+          fontFamily: "var(--ff-serif)",
+          fontSize: "1.1rem",
+          fontWeight: 400,
+          color: "var(--ink)",
+          marginBottom: "1.75rem",
+          letterSpacing: "0.01em",
+        }}
+      >
+        Filters
+      </h3>
 
-      {/* Category Filter */}
-      <div className="mb-6">
-        <label className="block text-gray-600 font-medium mb-2">Category</label>
+      {/* Category */}
+      <div style={sectionStyle}>
+        <label style={labelStyle}>Category</label>
         {categories.map((category) => (
-          <div key={category} className="flex items-center mb-1">
+          <div key={category} className="flex items-center gap-2 mb-2">
             <input
               type="radio"
               name="category"
               value={category}
               onChange={handleFilterChange}
               checked={filters.category === category}
-              className="mr-2 h-4 w-4 text-blue-500 focus:ring-blue-400 border-gray-300"
+              style={radioCheckStyle}
             />
-            <span className="text-gray-700">{category}</span>
+            <span style={optionLabelStyle}>{category}</span>
           </div>
         ))}
       </div>
 
-      {/* Gender Filter */}
-      <div className="mb-6">
-        <label className="block text-gray-600 font-medium mb-2">Gender</label>
+      {/* Gender */}
+      <div style={sectionStyle}>
+        <label style={labelStyle}>Gender</label>
         {genders.map((gender) => (
-          <div key={gender} className="flex items-center mb-1">
+          <div key={gender} className="flex items-center gap-2 mb-2">
             <input
               type="radio"
               name="gender"
               value={gender}
               onChange={handleFilterChange}
               checked={filters.gender === gender}
-              className="mr-2 h-4 w-4 text-blue-500 focus:ring-blue-400 border-gray-300"
+              style={radioCheckStyle}
             />
-            <span className="text-gray-700">{gender}</span>
+            <span style={optionLabelStyle}>{gender}</span>
           </div>
         ))}
       </div>
 
-      {/* Color Filter */}
-      <div className="mb-6">
-        <label className="block text-gray-600 font-medium mb-2">Color</label>
+      {/* Color */}
+      <div style={sectionStyle}>
+        <label style={labelStyle}>Color</label>
         <div className="flex flex-wrap gap-2">
           {colors.map((color) => (
             <button
@@ -162,73 +200,113 @@ const FilterSlidebar = () => {
               name="color"
               value={color}
               onClick={handleFilterChange}
-              className={`w-8 h-8 rounded-full border border-gray-300 cursor-pointer transition hover:scale-105 ${filters.color === color ? "ring-2 ring-blue-500" : ""}`}
-              style={{ backgroundColor: color.toLowerCase() }}
-            ></button>
+              title={color}
+              style={{
+                width: "1.75rem",
+                height: "1.75rem",
+                borderRadius: "50%",
+                backgroundColor: color.toLowerCase(),
+                border:
+                  filters.color === color
+                    ? "2px solid var(--gold)"
+                    : "2px solid rgba(15,17,23,0.12)",
+                cursor: "pointer",
+                transition: "border-color 0.2s, transform 0.15s",
+                outline:
+                  filters.color === color ? "1px solid var(--gold)" : "none",
+                outlineOffset: "2px",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = "scale(1.12)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = "scale(1)";
+              }}
+            />
           ))}
         </div>
       </div>
 
-      {/* Size Filter */}
-      <div className="mb-6">
-        <label className="block text-gray-600 font-medium mb-2">Size</label>
-        {sizes.map((size) => (
-          <div key={size} className="flex items-center mb-1">
-            <input
-              type="checkbox"
-              name="size"
-              value={size}
-              onChange={handleFilterChange}
-              checked={filters.size.includes(size)}
-              className="mr-2 h-4 w-4 text-blue-500 focus:ring-blue-400 border-gray-300"
-            />
-            <span className="text-gray-700">{size}</span>
-          </div>
-        ))}
+      {/* Size */}
+      <div style={sectionStyle}>
+        <label style={labelStyle}>Size</label>
+        <div className="flex flex-wrap gap-2">
+          {sizes.map((size) => {
+            const active = filters.size.includes(size);
+            return (
+              <label
+                key={size}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: "2.5rem",
+                  height: "2.5rem",
+                  fontSize: "0.72rem",
+                  fontWeight: 500,
+                  fontFamily: "var(--ff-sans)",
+                  border: `1px solid ${active ? "var(--ink)" : "rgba(15,17,23,0.15)"}`,
+                  borderRadius: "2px",
+                  background: active ? "var(--ink)" : "transparent",
+                  color: active ? "var(--parchment)" : "var(--ink)",
+                  cursor: "pointer",
+                  transition: "all 0.15s",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  name="size"
+                  value={size}
+                  onChange={handleFilterChange}
+                  checked={active}
+                  style={{ display: "none" }}
+                />
+                {size}
+              </label>
+            );
+          })}
+        </div>
       </div>
 
-      {/* Material Filter */}
-      <div className="mb-6">
-        <label className="block text-gray-600 font-medium mb-2">Material</label>
+      {/* Material */}
+      <div style={sectionStyle}>
+        <label style={labelStyle}>Material</label>
         {materials.map((material) => (
-          <div key={material} className="flex items-center mb-1">
+          <div key={material} className="flex items-center gap-2 mb-2">
             <input
               type="checkbox"
               name="material"
               value={material}
               onChange={handleFilterChange}
               checked={filters.material.includes(material)}
-              className="mr-2 h-4 w-4 text-blue-500 focus:ring-blue-400 border-gray-300"
+              style={radioCheckStyle}
             />
-            <span className="text-gray-700">{material}</span>
+            <span style={optionLabelStyle}>{material}</span>
           </div>
         ))}
       </div>
 
-      {/* Brand Filter */}
-      <div className="mb-6">
-        <label className="block text-gray-600 font-medium mb-2">Brand</label>
+      {/* Brand */}
+      <div style={sectionStyle}>
+        <label style={labelStyle}>Brand</label>
         {brands.map((brand) => (
-          <div key={brand} className="flex items-center mb-1">
+          <div key={brand} className="flex items-center gap-2 mb-2">
             <input
               type="checkbox"
               name="brand"
               value={brand}
               onChange={handleFilterChange}
               checked={filters.brand.includes(brand)}
-              className="mr-2 h-4 w-4 text-blue-500 focus:ring-blue-400 border-gray-300"
+              style={radioCheckStyle}
             />
-            <span className="text-gray-700">{brand}</span>
+            <span style={optionLabelStyle}>{brand}</span>
           </div>
         ))}
       </div>
 
-      {/* Price Range Filter */}
-
-      <div className="mb-8">
-        <label className="block text-gray-600 font-medium mb-2">
-          Price Range
-        </label>
+      {/* Price range */}
+      <div style={{ marginBottom: "1rem" }}>
+        <label style={labelStyle}>Price Range</label>
         <input
           type="range"
           name="priceRange"
@@ -236,11 +314,25 @@ const FilterSlidebar = () => {
           max={100}
           value={priceRange[1]}
           onChange={handlePriceChange}
-          className="w-full h-2 bg-gray-300 rounded-lg appearance-none cursor-pointer"
+          style={{
+            width: "100%",
+            height: "3px",
+            accentColor: "var(--gold)",
+            cursor: "pointer",
+            marginBottom: "0.75rem",
+          }}
         />
-        <div className="flex justify-between text-gray-600 mt-2">
-          <span>$0</span>
-          <span>${priceRange[1]}</span>
+        <div className="flex justify-between">
+          <span style={{ fontSize: "0.78rem", color: "var(--muted)" }}>$0</span>
+          <span
+            style={{
+              fontSize: "0.78rem",
+              color: "var(--gold)",
+              fontWeight: 500,
+            }}
+          >
+            ${priceRange[1]}
+          </span>
         </div>
       </div>
     </div>

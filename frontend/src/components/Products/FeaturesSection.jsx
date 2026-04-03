@@ -4,41 +4,81 @@ import {
   HiShoppingBag,
 } from "react-icons/hi2";
 
+const features = [
+  {
+    icon: HiShoppingBag,
+    title: "Free Shipping",
+    desc: "Fast delivery to your door, on us",
+  },
+  {
+    icon: HiArrowPathRoundedSquare,
+    title: "30-Day Returns",
+    desc: "Not happy? Send it back, no questions asked",
+  },
+  {
+    icon: HiOutlineCreditCard,
+    title: "Secure Checkout",
+    desc: "Your payment is always safe with us",
+  },
+];
+
 const FeaturesSection = () => {
   return (
-    <section className="py-16 px-4 bg-white">
-      <div className="container mx-auto grid grid-cols-1 md:grid-cols-3 gap-8 text-center">
-        {/* Feature 1 */}
-        <div className="flex flex-col items-center">
-          <div className="p-4 rounded-full mb-4">
-            <HiShoppingBag className="text-xl" />
-          </div>
-          <h4 className="tracking-tighter mb-2">FREE SHIPPING</h4>
-          <p className="text-gray-600 text-sm tracking-tighter">
-            Fast delivery to your door, on us
-          </p>
-        </div>
-
-        {/* Feature 2 */}
-        <div className="flex flex-col items-center">
-          <div className="p-4 rounded-full mb-4">
-            <HiArrowPathRoundedSquare className="text-xl" />
-          </div>
-          <h4 className="tracking-tighter mb-2">30 DAYS FREE RETURNS</h4>
-          <p className="text-gray-600 text-sm tracking-tighter">
-            Not happy? Send it back, no questions asked
-          </p>
-        </div>
-
-        {/* Feature 3 */}
-        <div className="flex flex-col items-center">
-          <div className="p-4 rounded-full mb-4">
-            <HiOutlineCreditCard className="text-xl" />
-          </div>
-          <h4 className="tracking-tighter mb-2">SECURE CHECKOUT</h4>
-          <p className="text-gray-600 text-sm tracking-tighter">
-            Your payment is always safe with us
-          </p>
+    <section
+      style={{
+        backgroundColor: "var(--parchment-dark)",
+        borderTop: "1px solid rgba(201,168,76,0.12)",
+      }}
+    >
+      <div className="container mx-auto px-6 py-16">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          {features.map(({ icon: Icon, title, desc }) => (
+            <div
+              key={title}
+              className="flex flex-col items-center text-center py-8 px-6"
+              style={{
+                border: "1px solid rgba(201,168,76,0.12)",
+                borderRadius: "2px",
+                backgroundColor: "var(--ink)",
+              }}
+            >
+              {/* Icon ring */}
+              <div
+                className="flex items-center justify-center mb-5"
+                style={{
+                  width: "3rem",
+                  height: "3rem",
+                  borderRadius: "50%",
+                  border: "1px solid var(--gold)",
+                  color: "var(--gold)",
+                }}
+              >
+                <Icon className="h-5 w-5" />
+              </div>
+              <h4
+                style={{
+                  color: "var(--parchment)",
+                  fontSize: "0.7rem",
+                  letterSpacing: "0.16em",
+                  textTransform: "uppercase",
+                  fontWeight: 500,
+                  marginBottom: "0.5rem",
+                  fontFamily: "var(--ff-sans)",
+                }}
+              >
+                {title}
+              </h4>
+              <p
+                style={{
+                  color: "var(--muted)",
+                  fontSize: "0.82rem",
+                  lineHeight: 1.7,
+                }}
+              >
+                {desc}
+              </p>
+            </div>
+          ))}
         </div>
       </div>
     </section>

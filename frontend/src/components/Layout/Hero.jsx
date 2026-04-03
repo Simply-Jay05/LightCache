@@ -3,26 +3,58 @@ import heroImg from "../../assets/hero.webp";
 
 const Hero = () => {
   return (
-    <section className="relative">
+    <section className="relative overflow-hidden">
       <img
         src={heroImg}
         alt="Hero"
-        className="w-full h-[450px] md:h-[600px] lg:h-[650px] object-cover"
+        className="w-full object-cover"
+        style={{ height: "clamp(480px, 80vh, 700px)" }}
       />
-      <div className="absolute inset-0 bg-black/5 flex items-center justify-center">
-        <div className="text-center text-white p-6">
-          <h1 className="text-6xl md:text-8xl lg:text-9xl font-bold tracking-tighter  mb-4">
-            Boost Your <br /> Confidence
+      {/* Dark gradient overlay — bottom-heavy for text legibility */}
+      <div
+        className="absolute inset-0"
+        style={{
+          background:
+            "linear-gradient(to bottom, rgba(15,17,23,0.15) 0%, rgba(15,17,23,0.55) 60%, rgba(15,17,23,0.82) 100%)",
+        }}
+      />
+      {/* Content — left-aligned, editorial */}
+      <div className="absolute inset-0 flex items-end">
+        <div className="container mx-auto px-6 pb-14">
+          <p className="section-label mb-4" style={{ color: "var(--gold)" }}>
+            New Season
+          </p>
+          <h1
+            className="font-serif font-normal mb-5"
+            style={{
+              color: "var(--parchment)",
+              fontFamily: "var(--ff-serif)",
+              fontSize: "clamp(2.8rem, 7vw, 5.5rem)",
+              lineHeight: 1.1,
+              letterSpacing: "-0.01em",
+              maxWidth: "14ch",
+            }}
+          >
+            Dressed for every version of you.
           </h1>
-          <p className="text-sm tracking-tighter md:text-lg mb-6">
-            With the best minimal clothing for everyday life. Look good without
-            trying too hard.
+          <p
+            style={{
+              color: "rgba(245,240,232,0.7)",
+              fontSize: "0.95rem",
+              maxWidth: "42ch",
+              lineHeight: 1.7,
+              marginBottom: "2rem",
+            }}
+          >
+            Minimal cuts, quality fabrics, timeless silhouettes built for the
+            way you actually live.
           </p>
           <Link
             to="/collections/all"
-            className="bg-white text-gray-950 px-6 py-2 rounded-sm text-lg"
+            className="btn-outline inline-block"
+            style={{ textDecoration: "none" }}
           >
-            Shop Now
+            Explore Collection
           </Link>
         </div>
       </div>

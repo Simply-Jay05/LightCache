@@ -23,6 +23,7 @@ import { setAuthDispatch } from "./redux/slices/authSlice";
 import store from "./redux/store";
 import ProtectedRoute from "./components/Common/ProtectedRoute";
 import CacheDashboard from "./components/Admin/CacheDashboard";
+import WelcomeModal from "./components/Common/WelcomeModal";
 
 // Wire the global 401 interceptor to Redux dispatch at app boot. This must happen before any axios request fires.
 setAuthDispatch(store.dispatch);
@@ -31,6 +32,7 @@ const App = () => {
   return (
     <Provider store={store}>
       <BrowserRouter>
+        <WelcomeModal />
         <Toaster position="top-right" />
         <Routes>
           <Route path="/" element={<UserLayout />}>
