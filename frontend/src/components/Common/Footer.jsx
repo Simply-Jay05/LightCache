@@ -219,7 +219,7 @@ const Footer = () => {
               display: "inline-block",
             }}
           >
-            LightCache<span style={{ color: "var(--gold)" }}>+</span>
+            Light<span style={{ color: "var(--gold)" }}>Cache</span>
           </Link>
           <p
             style={{

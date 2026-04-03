@@ -1,4 +1,3 @@
-
 import argparse
 import json
 import pickle
@@ -244,9 +243,11 @@ def train(df: pd.DataFrame):
     )
     ttl_model.fit(Xtr, ytr)
     ttl_preds = ttl_model.predict(Xte)
+    ttl_mae = round(float(mean_absolute_error(yte, ttl_preds)), 2)
+    ttl_r2  = round(float(r2_score(yte, ttl_preds)), 3)
     print(f"\n   [1] TTL Regressor")
-    print(f"       MAE : {mean_absolute_error(yte, ttl_preds):.1f}s")
-    print(f"       R2  : {r2_score(yte, ttl_preds):.3f}")
+    print(f"       MAE : {ttl_mae}s")
+    print(f"       R2  : {ttl_r2}")
     print(f"       (Expected: R2 0.3–0.6)")
 
     # Model 2: Eviction Score 
@@ -262,9 +263,11 @@ def train(df: pd.DataFrame):
     )
     evict_model.fit(Xtr2, ytr2)
     evict_preds = evict_model.predict(Xte2)
+    evict_mae = round(float(mean_absolute_error(yte2, evict_preds)), 2)
+    evict_r2  = round(float(r2_score(yte2, evict_preds)), 3)
     print(f"\n   [2] Eviction Score Regressor")
-    print(f"       MAE : {mean_absolute_error(yte2, evict_preds):.2f}")
-    print(f"       R2  : {r2_score(yte2, evict_preds):.3f}")
+    print(f"       MAE : {evict_mae}")
+    print(f"       R2  : {evict_r2}")
     print(f"       (Expected: R2 0.4–0.75)")
 
     # Model 3: Prefetch Classifier 
@@ -284,17 +287,31 @@ def train(df: pd.DataFrame):
     prefetch_model = MultiOutputClassifier(base_clf, n_jobs=-1)
     prefetch_model.fit(Xtr3, ytr3)
     pref_preds = prefetch_model.predict(Xte3)
-    f1 = f1_score(yte3, pref_preds, average="macro", zero_division=0)
+    pref_f1 = round(float(f1_score(yte3, pref_preds, average="macro", zero_division=0)), 3)
     print(f"\n   [3] Prefetch Multi-Label Classifier")
-    print(f"       F1 (macro) : {f1:.3f}")
+    print(f"       F1 (macro) : {pref_f1}")
     print(f"       (Expected: F1 0.5–0.8)")
 
-    return ttl_model, evict_model, prefetch_model
+    metrics = {
+        "ttl_mae":        ttl_mae,
+        "ttl_r2":         ttl_r2,
+        "evict_mae":      evict_mae,
+        "evict_r2":       evict_r2,
+        "prefetch_f1":    pref_f1,
+        "train_rows":     len(X),
+        "test_rows":      len(Xte),
+        "ttl_target_mean":   round(float(y_ttl.mean()), 1),
+        "ttl_target_std":    round(float(y_ttl.std()), 1),
+        "evict_target_mean": round(float(y_evict.mean()), 1),
+        "evict_target_std":  round(float(y_evict.std()), 1),
+    }
+
+    return ttl_model, evict_model, prefetch_model, metrics
 
 
 
 # 5. SAVE
-def save_models(ttl_model, evict_model, prefetch_model, df):
+def save_models(ttl_model, evict_model, prefetch_model, df, metrics=None):
     print(f"\nSaving to {MODEL_DIR}/")
     bundle = {
         "ttl_model":      ttl_model,
@@ -306,6 +323,17 @@ def save_models(ttl_model, evict_model, prefetch_model, df):
     }
     with open(MODEL_PATH, "wb") as f:
         pickle.dump(bundle, f)
+
+    # Feature importances from TTL model (normalised 0–100)
+    raw_imp   = ttl_model.feature_importances_
+    max_imp   = float(max(raw_imp)) if max(raw_imp) > 0 else 1.0
+    feat_imp  = [
+        {"feature": feat, "importance": round(float(imp), 4),
+         "importance_pct": round(float(imp) / max_imp * 100, 1)}
+        for feat, imp in sorted(
+            zip(FEATURE_COLS, raw_imp), key=lambda x: x[1], reverse=True
+        )
+    ]
 
     meta = {
         "trained_at":     pd.Timestamp.now().isoformat(),
@@ -319,6 +347,9 @@ def save_models(ttl_model, evict_model, prefetch_model, df):
             "new_arrivals": 3, "similar": 4,
         },
         "price_tier_map": {"unknown": 0, "budget": 1, "mid": 2, "premium": 3},
+        # ── Model metrics (all 3 models) ──────────────────────────────────
+        "metrics": metrics or {},
+        "feature_importances": feat_imp,
     }
     with open(META_PATH, "w") as f:
         json.dump(meta, f, indent=2)
@@ -359,8 +390,8 @@ def main():
     df = load_data(args.data)
     df = engineer_features(df)
     df = build_targets(df)
-    ttl_model, evict_model, prefetch_model = train(df)
-    save_models(ttl_model, evict_model, prefetch_model, df)
+    ttl_model, evict_model, prefetch_model, metrics = train(df)
+    save_models(ttl_model, evict_model, prefetch_model, df, metrics)
     print_importance(ttl_model)
 
     print("\n" + "=" * 55)

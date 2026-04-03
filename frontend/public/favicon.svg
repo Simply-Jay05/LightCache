@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Background: deep ink rounded square -->
+  <rect width="32" height="32" rx="7" fill="#0f1117"/>
+
+  <!-- Outer hexagon ring (chip frame), gold stroke -->
+  <polygon
+    points="16,2.5 27,8.5 27,23.5 16,29.5 5,23.5 5,8.5"
+    fill="none"
+    stroke="#c9a84c"
+    stroke-width="1.6"
+    stroke-linejoin="round"
+  />
+
+  <!-- Inner hexagon fill (slightly transparent) -->
+  <polygon
+    points="16,5.5 24.5,10.25 24.5,21.75 16,26.5 7.5,21.75 7.5,10.25"
+    fill="#1e2130"
+  />
+
+  <!-- Lightning bolt — the core mark -->
+  <!-- Top-right to center-left, then center-right to bottom-left -->
+  <path
+    d="M18.5 7.5 L12 16.5 L16.5 16.5 L13.5 24.5 L20 15.5 L15.5 15.5 Z"
+    fill="#c9a84c"
+    stroke="none"
+  />
+</svg>

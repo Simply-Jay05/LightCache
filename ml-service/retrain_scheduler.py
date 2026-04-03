@@ -9,7 +9,7 @@ from pathlib import Path
 
 import requests
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# Config 
 RETRAIN_INTERVAL_DAYS = int(os.getenv("RETRAIN_INTERVAL_DAYS", "3"))
 ROLLING_WINDOW_DAYS   = int(os.getenv("ROLLING_WINDOW_DAYS",   "30"))
 MIN_ROWS_TO_RETRAIN   = int(os.getenv("MIN_ROWS_TO_RETRAIN",   "1000"))
@@ -21,7 +21,7 @@ HISTORY_FILE = BASE_DIR / "model" / "retrain_history.json"
 MODEL_PATH   = BASE_DIR / "model" / "lightcache_model.pkl"
 MODEL_BACKUP = BASE_DIR / "model" / "lightcache_model_backup.pkl"
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+# Logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [RETRAIN] %(message)s",
@@ -30,7 +30,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# Helpers 
 def load_history() -> list:
     if HISTORY_FILE.exists():
         with open(HISTORY_FILE, "r") as f:
@@ -147,39 +147,22 @@ def run_retraining(data_file: Path) -> dict:
     df = build_targets(df)
 
     log.info("Training models...")
-    ttl_model, evict_model, prefetch_model = train(df)
+    ttl_model, evict_model, prefetch_model, train_metrics = train(df)
 
     log.info("Saving models...")
-    save_models(ttl_model, evict_model, prefetch_model, df)
-
-    # Extract metrics from the trained models
-    from sklearn.metrics import mean_absolute_error, r2_score
-    from sklearn.model_selection import train_test_split
-    import numpy as np
-
-    FEATURE_COLS = [
-        "route_type_enc", "page_type_enc", "price_tier_enc", "is_single_item",
-        "hour_of_day", "weekday", "is_peak_hour",
-        "hour_sin", "hour_cos", "day_sin", "day_cos",
-        "past_access_count", "log_past_count", "rolling_hit_rate",
-        "time_since_last_request", "request_interval_mean", "request_interval_std",
-    ]
-
-    X = df[FEATURE_COLS].fillna(0)
-    y = df["dynamic_ttl"]
-    _, X_test, _, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    preds = ttl_model.predict(X_test)
+    save_models(ttl_model, evict_model, prefetch_model, df, train_metrics)
 
     return {
         "training_rows":  len(df),
-        "ttl_mae":        round(float(mean_absolute_error(y_test, preds)), 2),
-        "ttl_r2":         round(float(r2_score(y_test, preds)), 3),
+        "ttl_mae":        train_metrics["ttl_mae"],
+        "ttl_r2":         train_metrics["ttl_r2"],
+        "evict_mae":      train_metrics["evict_mae"],
+        "evict_r2":       train_metrics["evict_r2"],
+        "prefetch_f1":    train_metrics["prefetch_f1"],
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # Main loop
-# ══════════════════════════════════════════════════════════════════════════════
 def should_retrain(history: list) -> tuple[bool, str]:
     """Returns (should_retrain, reason)."""
     last = get_last_retrain_time(history)
@@ -249,6 +232,9 @@ def main():
                             "training_rows":  metrics["training_rows"],
                             "ttl_mae":        metrics["ttl_mae"],
                             "ttl_r2":         metrics["ttl_r2"],
+                            "evict_mae":      metrics.get("evict_mae"),
+                            "evict_r2":       metrics.get("evict_r2"),
+                            "prefetch_f1":    metrics.get("prefetch_f1"),
                             "elapsed_seconds": elapsed,
                             "hot_reloaded":   reloaded,
                             "window_days":    ROLLING_WINDOW_DAYS,

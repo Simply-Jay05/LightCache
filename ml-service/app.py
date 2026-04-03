@@ -327,48 +327,26 @@ def benchmark_results():
         return json.load(f)
 
 
-@app.post("/benchmark/run")
-def run_benchmark_now():
+@app.get("/admin/model-metrics")
+def model_metrics():
     """
-    Synchronously re-runs benchmark.py against the current cache_events.jsonl
-    and returns the fresh results. Called from the admin dashboard whenever
-    the user wants up-to-date numbers without restarting the container.
-    Typically completes in 2–10 seconds.
+    Returns the full model metadata including all 3 model metrics and
+    feature importances from the most recently trained model.
+    Used by the admin dashboard's Model Metrics tab.
     """
-    import subprocess, shutil
-
-    if not BENCHMARK_DATA_PATH.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="No log data yet (cache_events.jsonl missing). "
-                   "Generate some traffic first, then re-run."
-        )
-
-    try:
-        result = subprocess.run(
-            [
-                "python", str(BASE_DIR / "benchmark.py"),
-                "--data",   str(BENCHMARK_DATA_PATH),
-                "--output", str(BENCHMARK_MODEL_PATH),
-            ],
-            capture_output=True, text=True, timeout=120,
-        )
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=504, detail="Benchmark timed out (>120s)")
-
-    if result.returncode != 0:
-        raise HTTPException(
-            status_code=500,
-            detail=f"benchmark.py exited {result.returncode}: {result.stderr[:300]}"
-        )
-
-    # Sync to shared volume so the backend's file-read path also picks it up
-    BENCHMARK_LOGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(BENCHMARK_MODEL_PATH, BENCHMARK_LOGS_PATH)
-
-    with open(BENCHMARK_MODEL_PATH, "r") as f:
-        return json.load(f)
-
+    if not META_PATH.exists():
+        raise HTTPException(status_code=404, detail="Model not trained yet.")
+    with open(META_PATH, "r") as f:
+        meta = json.load(f)
+    return {
+        "trained_at":          meta.get("trained_at"),
+        "training_rows":       meta.get("training_rows"),
+        "ttl_bounds":          meta.get("ttl_bounds"),
+        "metrics":             meta.get("metrics", {}),
+        "feature_importances": meta.get("feature_importances", []),
+        "feature_cols":        meta.get("feature_cols", []),
+        "route_types":         meta.get("route_types", []),
+    }
 
 @app.get("/admin/retrain-history")
 def retrain_history():
@@ -612,10 +590,17 @@ def trigger_retrain():
 
         print(f"[trigger-retrain] Retrained on {row_count} rows, model hot-reloaded.")
 
+        # Pull fresh metrics from the updated meta file
+        fresh_metrics = META.get("metrics", {})
         return {
             "status":        "retrained",
             "training_rows": row_count,
             "trained_at":    META["trained_at"],
+            "ttl_mae":       fresh_metrics.get("ttl_mae"),
+            "ttl_r2":        fresh_metrics.get("ttl_r2"),
+            "evict_mae":     fresh_metrics.get("evict_mae"),
+            "evict_r2":      fresh_metrics.get("evict_r2"),
+            "prefetch_f1":   fresh_metrics.get("prefetch_f1"),
             "message":       "Model retrained and hot-reloaded. You can now activate ML mode.",
         }
     except HTTPException:

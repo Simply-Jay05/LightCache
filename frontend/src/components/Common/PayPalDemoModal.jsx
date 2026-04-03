@@ -108,7 +108,7 @@ const PayPalDemoModal = ({ onConfirm, onCancel }) => {
             }}
           >
             This store uses PayPal Sandbox. Log in with one of the demo buyer
-            accounts below — no real money will be charged.
+            accounts below. Note no real money will be charged.
           </p>
         </div>
 

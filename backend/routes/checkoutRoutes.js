@@ -18,6 +18,12 @@ router.post("/", protect, async (req, res) => {
     return res.status(400).json({ message: "No items in checkout" });
   }
 
+  if (!req.user || !req.user._id) {
+    return res
+      .status(401)
+      .json({ message: "Not authorized, please log in again" });
+  }
+
   try {
     // Create a new checkout session
     const newCheckout = await Checkout.create({

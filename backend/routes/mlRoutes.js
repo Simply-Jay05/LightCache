@@ -19,6 +19,23 @@ router.get("/retrain-history", protect, admin, async (req, res) => {
   }
 });
 
+// GET /api/ml/model-metrics
+// Returns full model metadata: all 3 model metrics + feature importances.
+// Sourced from model_meta.json written by train.py on every training run.
+router.get("/model-metrics", protect, admin, async (req, res) => {
+  try {
+    const response = await fetch(`${ML_SERVICE_URL}/admin/model-metrics`);
+    if (!response.ok) {
+      const text = await response.text();
+      return res.status(response.status).json({ message: text });
+    }
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    res.status(503).json({ message: "ML service unavailable" });
+  }
+});
+
 // GET /api/ml/health
 router.get("/health", protect, admin, async (req, res) => {
   try {

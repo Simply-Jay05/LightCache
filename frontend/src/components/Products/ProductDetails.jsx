@@ -244,7 +244,7 @@ const ProductDetails = ({ productId }) => {
                         height: "2rem",
                         borderRadius: "50%",
                         backgroundColor: color.toLowerCase(),
-                        filter: "brightness(0.6)",
+                        // filter: "brightness(0.6)",
                         border:
                           selectedColor === color
                             ? "2px solid var(--gold)"

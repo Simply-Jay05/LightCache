@@ -90,7 +90,7 @@ const WelcomeModal = () => {
               fontFamily: "var(--ff-sans)",
             }}
           >
-            Welcome to LightCache+
+            Welcome to LightCache
           </p>
           <h2
             style={{
@@ -112,7 +112,7 @@ const WelcomeModal = () => {
               fontFamily: "var(--ff-sans)",
             }}
           >
-            This is a real full-stack project. Browse, add to cart, and complete
+            This is a real full-stack project. Browse, add to cart and complete
             a purchase using our sandbox PayPal account, no real card needed.
           </p>
         </div>
@@ -217,7 +217,7 @@ const WelcomeModal = () => {
                 fontFamily: "var(--ff-sans)",
               }}
             >
-              You will see these again at checkout. Sandbox only therefore
+              You will see these again at checkout. Remember it just a Sandbox,
               nothing is charged.
             </p>
           </div>

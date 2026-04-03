@@ -35,8 +35,8 @@ const FeaturedCollection = () => {
                 marginBottom: "2.5rem",
               }}
             >
-              Simple cuts, quality fabrics, and timeless styles — built for
-              people who value comfort without sacrificing how they look.
+              Simple cuts, quality fabrics and timeless styles. Built for people
+              who value comfort without sacrificing how they look.
             </p>
             <Link
               to="/collections/all"
