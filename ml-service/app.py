@@ -22,14 +22,13 @@ BENCHMARK_MODEL_PATH = BASE_DIR / "model" / "benchmark_results.json"
 BENCHMARK_LOGS_PATH  = BASE_DIR / "logs"  / "benchmark_results.json"
 BENCHMARK_DATA_PATH  = BASE_DIR / "logs"  / "cache_events.jsonl"
 
-# Model globals (None until trained)
-TTL_MODEL        = None
-EVICT_MODEL      = None
-PREFETCH_MODEL   = None
-FEATURE_COLS     = []
-ROUTE_TYPES      = []
-META             = {}
-TTL_LOG_TRANSFORM = False   # flips True when model was trained with log-transform
+# Model globals (None until trained) 
+TTL_MODEL      = None
+EVICT_MODEL    = None
+PREFETCH_MODEL = None
+FEATURE_COLS   = []
+ROUTE_TYPES    = []
+META           = {}
 
 # Default fallback values used when no model is loaded
 DEFAULT_META = {
@@ -41,10 +40,6 @@ DEFAULT_META = {
     "page_type_map":   {"collection": 0, "product_detail": 1,
                         "best_seller": 2, "new_arrivals": 3, "similar": 4},
     "price_tier_map":  {"unknown": 0, "budget": 1, "mid": 2, "premium": 3},
-    "fixed_ttls": {
-        "products_list": 300, "product_single": 600,
-        "best_seller": 120, "new_arrivals": 180, "similar_products": 600,
-    },
 }
 
 MODEL_READY = False   # flips True once a model is successfully loaded
@@ -57,7 +52,7 @@ def try_load_model() -> bool:
     Safe to call multiple times — always replaces globals atomically.
     """
     global TTL_MODEL, EVICT_MODEL, PREFETCH_MODEL, FEATURE_COLS, ROUTE_TYPES
-    global META, MODEL_READY, TTL_LOG_TRANSFORM
+    global META, MODEL_READY
 
     if not MODEL_PATH.exists():
         print("  No model found yet — running in fixed-TTL fallback mode.")
@@ -69,14 +64,11 @@ def try_load_model() -> bool:
         with open(MODEL_PATH, "rb") as f:
             bundle = pickle.load(f)
 
-        TTL_MODEL         = bundle["ttl_model"]
-        EVICT_MODEL       = bundle["evict_model"]
-        PREFETCH_MODEL    = bundle["prefetch_model"]
-        FEATURE_COLS      = bundle["feature_cols"]
-        ROUTE_TYPES       = bundle["route_types"]
-        # Read the log-transform flag — defaults False for backward-compat with
-        # older model pickles that pre-date this improvement
-        TTL_LOG_TRANSFORM = bundle.get("ttl_log_transform", False)
+        TTL_MODEL      = bundle["ttl_model"]
+        EVICT_MODEL    = bundle["evict_model"]
+        PREFETCH_MODEL = bundle["prefetch_model"]
+        FEATURE_COLS   = bundle["feature_cols"]
+        ROUTE_TYPES    = bundle["route_types"]
 
         with open(META_PATH, "r") as f:
             META = json.load(f)
@@ -84,7 +76,6 @@ def try_load_model() -> bool:
         MODEL_READY = True
         print(f"✅ Model loaded — trained on {META['training_rows']:,} rows")
         print(f"   Trained at: {META['trained_at']}")
-        print(f"   TTL log-transform: {TTL_LOG_TRANSFORM}")
         return True
 
     except Exception as e:
@@ -94,7 +85,7 @@ def try_load_model() -> bool:
         return False
 
 
-# Schemas
+# Schemas 
 class PredictRequest(BaseModel):
     route_type:               str
     page_type:                str
@@ -123,12 +114,11 @@ class PredictResponse(BaseModel):
     model_version:   str
 
 
-# Feature vector builder
+# Feature vector builder 
 def build_vector(req: PredictRequest) -> np.ndarray:
     route_map = META.get("route_type_map",  DEFAULT_META["route_type_map"])
     page_map  = META.get("page_type_map",   DEFAULT_META["page_type_map"])
     tier_map  = META.get("price_tier_map",  DEFAULT_META["price_tier_map"])
-    fixed_ttls = META.get("fixed_ttls",     DEFAULT_META["fixed_ttls"])
 
     route_enc = route_map.get(req.route_type, 0)
     page_enc  = page_map.get(req.page_type, 0)
@@ -143,8 +133,7 @@ def build_vector(req: PredictRequest) -> np.ndarray:
     past_access = req.key_access_count or 1
     log_past    = math.log1p(past_access)
 
-    # Base 17 features (always present — matches old model pickles too)
-    base_vector = [
+    return np.array([[
         route_enc, page_enc, tier_enc, is_single,
         req.hour_of_day, req.weekday, req.is_peak_hour,
         hour_sin, hour_cos, day_sin, day_cos,
@@ -152,18 +141,10 @@ def build_vector(req: PredictRequest) -> np.ndarray:
         req.time_since_last_request or 0.0,
         req.request_interval_mean or 300.0,
         req.request_interval_std or 0.0,
-    ]
-
-    # Append baseline_ttl features when the loaded model expects 19 features
-    if "baseline_ttl" in FEATURE_COLS:
-        baseline_ttl     = float(fixed_ttls.get(req.route_type, 300))
-        log_baseline_ttl = math.log1p(baseline_ttl)
-        base_vector.extend([baseline_ttl, log_baseline_ttl])
-
-    return np.array([base_vector])
+    ]])
 
 
-# Predict
+# Predict 
 def run_predict(req: PredictRequest) -> PredictResponse:
     if not MODEL_READY:
         raise HTTPException(
@@ -174,13 +155,7 @@ def run_predict(req: PredictRequest) -> PredictResponse:
     t0 = time.perf_counter()
     X  = build_vector(req)
 
-    raw_ttl = float(TTL_MODEL.predict(X)[0])
-
-    # Invert the log-transform if the model was trained with log1p target.
-    # Without this, predictions would be in log-space (e.g. 6.5s instead of 664s).
-    if TTL_LOG_TRANSFORM:
-        raw_ttl = float(np.expm1(raw_ttl))
-
+    raw_ttl     = float(TTL_MODEL.predict(X)[0])
     ttl_min     = META.get("ttl_bounds", {}).get("min", 30)
     ttl_max     = META.get("ttl_bounds", {}).get("max", 1800)
     ttl_seconds = int(np.clip(round(raw_ttl), ttl_min, ttl_max))
@@ -263,27 +238,26 @@ async def lifespan(app):
     yield
 
 
-# App
+# App 
 app = FastAPI(
     title="LightCache ML Service",
     description="Dynamic TTL, eviction score and prefetch predictions",
-    version="4.0.0",
+    version="3.0.0",
     lifespan=lifespan,
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
 
-# Endpoints
+# Endpoints 
 
 @app.get("/health")
 def health():
     return {
-        "status":           "ok",
-        "model_ready":      MODEL_READY,
-        "trained_at":       META.get("trained_at"),
-        "training_rows":    META.get("training_rows", 0),
-        "ttl_log_transform": TTL_LOG_TRANSFORM,
+        "status":        "ok",
+        "model_ready":   MODEL_READY,
+        "trained_at":    META.get("trained_at"),
+        "training_rows": META.get("training_rows", 0),
     }
 
 
@@ -295,13 +269,12 @@ def predict(req: PredictRequest):
 @app.get("/model/info")
 def model_info():
     return {
-        "model_ready":       MODEL_READY,
-        "trained_at":        META.get("trained_at"),
-        "training_rows":     META.get("training_rows", 0),
-        "features":          FEATURE_COLS,
-        "route_types":       ROUTE_TYPES,
-        "ttl_bounds":        META.get("ttl_bounds"),
-        "ttl_log_transform": TTL_LOG_TRANSFORM,
+        "model_ready":   MODEL_READY,
+        "trained_at":    META.get("trained_at"),
+        "training_rows": META.get("training_rows", 0),
+        "features":      FEATURE_COLS,
+        "route_types":   ROUTE_TYPES,
+        "ttl_bounds":    META.get("ttl_bounds"),
     }
 
 
@@ -342,7 +315,7 @@ def readiness():
 def reload_model():
     """Hot-reload model from disk without restarting. Called after retraining."""
     global TTL_MODEL, EVICT_MODEL, PREFETCH_MODEL, FEATURE_COLS, ROUTE_TYPES
-    global META, MODEL_READY, TTL_LOG_TRANSFORM
+    global META, MODEL_READY
 
     if not MODEL_PATH.exists():
         raise HTTPException(status_code=404, detail="Model file not found")
@@ -352,10 +325,9 @@ def reload_model():
         raise HTTPException(status_code=500, detail="Failed to load model")
 
     return {
-        "status":           "reloaded",
-        "trained_at":       META.get("trained_at"),
-        "training_rows":    META.get("training_rows"),
-        "ttl_log_transform": TTL_LOG_TRANSFORM,
+        "status":        "reloaded",
+        "trained_at":    META.get("trained_at"),
+        "training_rows": META.get("training_rows"),
     }
 
 
@@ -392,16 +364,12 @@ def trigger_retrain():
 
         fresh = META.get("metrics", {})
         return {
-            "status":            "retrained",
-            "training_rows":     row_count,
-            "trained_at":        META.get("trained_at"),
-            "ttl_mae":           fresh.get("ttl_mae"),
-            "ttl_r2":            fresh.get("ttl_r2"),
-            "ttl_r2_cv_mean":    fresh.get("ttl_r2_cv_mean"),
-            "prefetch_f1":       fresh.get("prefetch_f1"),
-            "prefetch_f1_weighted": fresh.get("prefetch_f1_weighted"),
-            "ttl_log_transform": TTL_LOG_TRANSFORM,
-            "message":           "Model retrained and hot-reloaded. You can now activate ML mode.",
+            "status":        "retrained",
+            "training_rows": row_count,
+            "trained_at":    META.get("trained_at"),
+            "ttl_mae":       fresh.get("ttl_mae"),
+            "ttl_r2":        fresh.get("ttl_r2"),
+            "message":       "Model retrained and hot-reloaded. You can now activate ML mode.",
         }
     except HTTPException:
         raise
@@ -498,9 +466,8 @@ def reset_data():
             p.unlink()
             deleted.append(p.name)
 
-    global MODEL_READY, TTL_LOG_TRANSFORM
-    MODEL_READY       = False
-    TTL_LOG_TRANSFORM = False
+    global MODEL_READY
+    MODEL_READY = False
 
     return {
         "status":  "reset",
@@ -537,13 +504,13 @@ def model_metrics():
     with open(META_PATH, "r") as f:
         meta = json.load(f)
     return {
-        "trained_at":           meta.get("trained_at"),
-        "training_rows":        meta.get("training_rows"),
-        "ttl_bounds":           meta.get("ttl_bounds"),
-        "metrics":              meta.get("metrics", {}),
-        "feature_importances":  meta.get("feature_importances", []),
-        "feature_cols":         meta.get("feature_cols", []),
-        "route_types":          meta.get("route_types", []),
+        "trained_at":          meta.get("trained_at"),
+        "training_rows":       meta.get("training_rows"),
+        "ttl_bounds":          meta.get("ttl_bounds"),
+        "metrics":             meta.get("metrics", {}),
+        "feature_importances": meta.get("feature_importances", []),
+        "feature_cols":        meta.get("feature_cols", []),
+        "route_types":         meta.get("route_types", []),
     }
 
 
