@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from lightgbm import LGBMClassifier, LGBMRegressor
-from sklearn.metrics import f1_score, mean_absolute_error, r2_score
+from sklearn.metrics import f1_score, mean_absolute_error, r2_score, roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.multioutput import MultiOutputClassifier
 
@@ -63,7 +63,6 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     print("\nEngineering features...")
     df = df.copy()
 
-    # Ensure numeric types
     for col in ["ttl_used", "latency_ms", "hour_of_day", "weekday",
                 "is_peak_hour", "is_weekend", "is_hit"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
@@ -91,6 +90,7 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     df["day_sin"]  = np.sin(2 * np.pi * df["weekday"] / 7)
     df["day_cos"]  = np.cos(2 * np.pi * df["weekday"] / 7)
 
+    # Access history — strictly past-only (no leakage)
     df["past_access_count"] = df.groupby("cache_key").cumcount() + 1
     df["log_past_count"]    = np.log1p(df["past_access_count"])
 
@@ -125,16 +125,13 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         .clip(0, TTL_MAX)
     )
 
-    # ── HIGH-SIGNAL FEATURES ──────────────────────────────────────────────
-    # log_ttl_used: prior TTL decisions encode the system's learned access
-    # pattern for this key. Correlates 0.917 with ttl_label.
-    # latency_log: response latency reflects data complexity/size.
-    # Correlates -0.23 with ttl_label — heavier responses warrant
-    # shorter TTLs (content changes more frequently).
-    # Both are present in the PredictRequest so no inference-time leakage.
-    df["log_ttl_used"] = np.log1p(df["ttl_used"].clip(0, TTL_MAX))
-    df["latency_log"]  = np.log1p(df["latency_ms"].clip(0, 5000))
-    # ──────────────────────────────────────────────────────────────────────
+    # Latency is available at request time and reflects response complexity
+    df["latency_log"] = np.log1p(df["latency_ms"].clip(0, 5000))
+
+    # NOTE: ttl_used and ttl_label are deliberately EXCLUDED from features.
+    # ttl_label = ttl_used or ttl_used*0.5 (100% rule-based, not learned).
+    # Including either would be circular — the model would memorise a
+    # simple ratio rather than learning real traffic patterns.
 
     print(f"   Done: {df.shape[1]} columns, {len(df):,} rows")
     return df
@@ -145,42 +142,31 @@ def build_targets(df: pd.DataFrame) -> pd.DataFrame:
     print("\nBuilding targets...")
     df = df.copy()
 
-    # ── Target 1: TTL ─────────────────────────────────────────────────────
-    # CRITICAL FIX: the data has a `ttl_label` column — a pre-computed
-    # optimal TTL per row with std=359s (vs the noisy timestamp-gap
-    # target's std=755s). Using it directly gives R²=0.999 vs R²~0.4.
-    # Fall back to timestamp gaps only if ttl_label is absent.
-    if "ttl_label" in df.columns:
-        df["ttl_label"] = pd.to_numeric(df["ttl_label"], errors="coerce")
-        n_missing = df["ttl_label"].isna().sum()
-        if n_missing:
-            print(f"   ttl_label: {n_missing} missing → filled from ttl_used")
-            df["ttl_label"] = df["ttl_label"].fillna(df["ttl_used"])
-        df["dynamic_ttl"] = df["ttl_label"].clip(TTL_MIN, TTL_MAX)
-        print(f"   Using ttl_label as TTL target  ✓  "
-              f"(std={df['dynamic_ttl'].std():.0f}s — much cleaner than timestamp gaps)")
-    else:
-        print("   ⚠️  ttl_label not in data — falling back to timestamp-gap target")
-        df["next_request_ts"] = df.groupby("cache_key")["timestamp"].shift(-1)
-        df["dynamic_ttl"] = (
-            (df["next_request_ts"] - df["timestamp"]) / 1000.0
-        )
-        median_ttl = df["dynamic_ttl"].median()
-        df["dynamic_ttl"] = (
-            df["dynamic_ttl"]
-            .fillna(median_ttl if pd.notna(median_ttl) else 300)
-            .clip(TTL_MIN, TTL_MAX)
-        )
+    # ── Target 1: dynamic_ttl ─────────────────────────────────────────────
+    # Honest target: actual time until the same cache_key is next accessed.
+    # This is what the system truly needs to optimise — not a circular
+    # replay of ttl_used.  ttl_label is excluded because it equals
+    # ttl_used (or ttl_used * 0.5) in 100% of rows, making the model
+    # learn a lookup table rather than traffic patterns.
+    df["next_request_ts"] = df.groupby("cache_key")["timestamp"].shift(-1)
+    df["dynamic_ttl"] = (df["next_request_ts"] - df["timestamp"]) / 1000.0
+    median_gap = df["dynamic_ttl"].median()
+    df["dynamic_ttl"] = (
+        df["dynamic_ttl"]
+        .fillna(median_gap if pd.notna(median_gap) else 300)
+        .clip(TTL_MIN, TTL_MAX)
+    )
 
-    # ── Target 2: eviction_score (unchanged) ──────────────────────────────
+    # ── Target 2: eviction_score ──────────────────────────────────────────
+    # Future access count within 10 minutes — legitimate look-ahead label.
     WINDOW_MS = 10 * 60 * 1000
 
     def future_access_count(group):
         ts = group["timestamp"].values
         counts = np.zeros(len(ts), dtype=float)
         for i in range(len(ts)):
-            future_mask = (ts > ts[i]) & (ts <= ts[i] + WINDOW_MS)
-            counts[i] = future_mask.sum()
+            mask = (ts > ts[i]) & (ts <= ts[i] + WINDOW_MS)
+            counts[i] = mask.sum()
         return pd.Series(counts, index=group.index)
 
     print("   Computing future access counts (may take ~30s)...")
@@ -194,17 +180,27 @@ def build_targets(df: pd.DataFrame) -> pd.DataFrame:
         (df["future_access_count"] / max_count * 200).clip(0, 200)
     )
 
-    # ── Target 3: prefetch labels (unchanged) ─────────────────────────────
-    df["next_route"] = df.groupby("cache_key")["route_type"].shift(-1)
-    for rt in ROUTE_TYPES:
-        df[f"prefetch_{rt}"] = (df["next_route"] == rt).astype(int)
+    # ── Target 3: cache_reuse ─────────────────────────────────────────────
+    # REPLACES the broken next_route prefetch target.
+    #
+    # Original problem: each cache_key has exactly ONE route_type, so
+    # "next route for this key" == "current route" 100% of the time.
+    # The original model achieved F1=1.0 by memorising a trivial identity.
+    #
+    # New target: binary per-row — will this key be accessed again before
+    # its TTL expires?  This is directly actionable for prefetch decisions
+    # (high probability → warm the cache proactively) and is not circular.
+    df["next_gap_s"] = (df["next_request_ts"] - df["timestamp"]) / 1000.0
+    df["cache_reuse"] = (df["next_gap_s"] <= df["ttl_used"]).astype(int)
+    # Last access per key has no next_ts → conservatively mark as 0
+    df["cache_reuse"] = df["cache_reuse"].fillna(0).astype(int)
 
-    print(f"   dynamic_ttl    — mean: {df['dynamic_ttl'].mean():.0f}s  "
+    print(f"   dynamic_ttl  — mean: {df['dynamic_ttl'].mean():.0f}s  "
           f"std: {df['dynamic_ttl'].std():.0f}s  "
           f"range: {df['dynamic_ttl'].min():.0f}–{df['dynamic_ttl'].max():.0f}s")
     print(f"   eviction_score — mean: {df['eviction_score'].mean():.1f}  "
           f"range: {df['eviction_score'].min():.1f}–{df['eviction_score'].max():.1f}")
-    print(f"   prefetch       — {df['next_route'].notna().sum():,} sequenced rows")
+    print(f"   cache_reuse — positive rate: {df['cache_reuse'].mean()*100:.1f}%")
 
     return df
 
@@ -216,12 +212,12 @@ FEATURE_COLS = [
     # Time of day
     "hour_of_day", "weekday", "is_peak_hour", "is_weekend",
     "hour_sin", "hour_cos", "day_sin", "day_cos",
-    # Access history
+    # Access history (past-only, no leakage)
     "past_access_count", "log_past_count", "rolling_hit_rate",
     # Inter-arrival timing
     "time_since_last_request", "request_interval_mean", "request_interval_std",
-    # Prior TTL decisions + response latency (high-signal, no leakage)
-    "log_ttl_used", "latency_log",
+    # Response complexity signal
+    "latency_log",
 ]
 
 
@@ -231,26 +227,25 @@ def train(df: pd.DataFrame):
 
     # =====================================================================
     # Model 1: TTL Regressor
-    # Target: ttl_label (clean, pre-computed, std=359s)
+    # Target: actual inter-arrival time (honest traffic signal)
+    # Expected: MAE ~200–250s, R² ~0.4–0.55
     # =====================================================================
     y_ttl = df["dynamic_ttl"]
     Xtr, Xte, ytr, yte = train_test_split(
         X, y_ttl, test_size=0.2, random_state=42, shuffle=True
     )
-
     ttl_model = LGBMRegressor(
         objective="regression",
-        n_estimators=600,
-        learning_rate=0.02,
-        max_depth=6,
-        num_leaves=40,
-        min_child_samples=15,
+        n_estimators=400,
+        learning_rate=0.03,
+        max_depth=5,
+        num_leaves=25,
+        min_child_samples=20,
         subsample=0.8,
-        subsample_freq=1,
         colsample_bytree=0.8,
-        reg_alpha=0.05,
-        reg_lambda=0.1,
-        n_iter_no_change=50,
+        reg_alpha=0.1,
+        reg_lambda=0.2,
+        n_iter_no_change=40,
         random_state=42,
         verbose=-1,
     )
@@ -258,13 +253,14 @@ def train(df: pd.DataFrame):
     ttl_preds = ttl_model.predict(Xte).clip(TTL_MIN, TTL_MAX)
     ttl_mae   = round(float(mean_absolute_error(yte, ttl_preds)), 2)
     ttl_r2    = round(float(r2_score(yte, ttl_preds)), 3)
+    naive_mae = round(float(mean_absolute_error(yte, np.full(len(yte), ytr.mean()))), 2)
     print(f"\n   [1] TTL Regressor")
-    print(f"       MAE : {ttl_mae}s")
-    print(f"       R2  : {ttl_r2}")
-    print(f"       (Expected: R2 0.95+)")
+    print(f"       MAE    : {ttl_mae}s  (naive mean baseline: {naive_mae}s)")
+    print(f"       R²     : {ttl_r2}")
+    print(f"       Expected: MAE ~200–250s, R² 0.4–0.55")
 
     # =====================================================================
-    # Model 2: Eviction Score  — UNCHANGED (R²=0.986)
+    # Model 2: Eviction Score Regressor  — unchanged, legitimate target
     # =====================================================================
     y_evict = df["eviction_score"]
     Xtr2, Xte2, ytr2, yte2 = train_test_split(
@@ -274,6 +270,7 @@ def train(df: pd.DataFrame):
         n_estimators=300, learning_rate=0.03, max_depth=5,
         num_leaves=25, min_child_samples=20,
         subsample=0.8, colsample_bytree=0.8,
+        reg_alpha=0.1, reg_lambda=0.1,
         random_state=42, verbose=-1,
     )
     evict_model.fit(Xtr2, ytr2)
@@ -282,60 +279,72 @@ def train(df: pd.DataFrame):
     evict_r2  = round(float(r2_score(yte2, evict_preds)), 3)
     print(f"\n   [2] Eviction Score Regressor")
     print(f"       MAE : {evict_mae}")
-    print(f"       R2  : {evict_r2}")
-    print(f"       (Expected: R2 0.4–0.75)")
+    print(f"       R²  : {evict_r2}")
+    print(f"       Expected: R² 0.6–0.85")
 
     # =====================================================================
-    # Model 3: Prefetch Classifier  — UNCHANGED (F1=1.0)
+    # Model 3: Cache-Reuse Classifier
+    # Replaces the broken next_route prefetch (which had trivial F1=1.0).
+    # New target: will this key be accessed again before its TTL expires?
+    # Expected: F1 ~0.75–0.85, AUC ~0.85–0.95
     # =====================================================================
-    prefetch_mask = df["next_route"].notna()
-    X_pref = X[prefetch_mask]
-    prefetch_cols = [f"prefetch_{rt}" for rt in ROUTE_TYPES]
-    y_pref = df.loc[prefetch_mask, prefetch_cols]
-
+    y_reuse = df["cache_reuse"]
     Xtr3, Xte3, ytr3, yte3 = train_test_split(
-        X_pref, y_pref, test_size=0.2, random_state=42, shuffle=True
+        X, y_reuse, test_size=0.2, random_state=42, shuffle=True
     )
-    base_clf = LGBMClassifier(
-        n_estimators=200, learning_rate=0.03, max_depth=4,
-        num_leaves=15, min_child_samples=20,
-        random_state=42, verbose=-1,
+    reuse_model = LGBMClassifier(
+        n_estimators=300,
+        learning_rate=0.03,
+        max_depth=5,
+        num_leaves=25,
+        min_child_samples=20,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        reg_alpha=0.1,
+        random_state=42,
+        verbose=-1,
     )
-    prefetch_model = MultiOutputClassifier(base_clf, n_jobs=-1)
-    prefetch_model.fit(Xtr3, ytr3)
-    pref_preds = prefetch_model.predict(Xte3)
-    pref_f1 = round(float(f1_score(yte3, pref_preds, average="macro", zero_division=0)), 3)
-    print(f"\n   [3] Prefetch Multi-Label Classifier")
-    print(f"       F1 (macro) : {pref_f1}")
-    print(f"       (Expected: F1 0.5–0.8)")
+    reuse_model.fit(Xtr3, ytr3)
+    reuse_preds = reuse_model.predict(Xte3)
+    reuse_proba = reuse_model.predict_proba(Xte3)[:, 1]
+    reuse_f1  = round(float(f1_score(yte3, reuse_preds, average="macro", zero_division=0)), 3)
+    reuse_auc = round(float(roc_auc_score(yte3, reuse_proba)), 3)
+    print(f"\n   [3] Cache-Reuse Classifier")
+    print(f"       F1 (macro) : {reuse_f1}")
+    print(f"       AUC-ROC    : {reuse_auc}")
+    print(f"       Expected: F1 0.75–0.85, AUC 0.85–0.95")
 
     metrics = {
-        "ttl_mae":        ttl_mae,
-        "ttl_r2":         ttl_r2,
-        "evict_mae":      evict_mae,
-        "evict_r2":       evict_r2,
-        "prefetch_f1":    pref_f1,
-        "train_rows":     len(X),
-        "test_rows":      len(Xte),
+        "ttl_mae":           ttl_mae,
+        "ttl_r2":            ttl_r2,
+        "ttl_naive_mae":     naive_mae,
+        "evict_mae":         evict_mae,
+        "evict_r2":          evict_r2,
+        "reuse_f1":          reuse_f1,
+        "reuse_auc":         reuse_auc,
+        "train_rows":        len(X),
+        "test_rows":         len(Xte),
         "ttl_target_mean":   round(float(y_ttl.mean()), 1),
         "ttl_target_std":    round(float(y_ttl.std()), 1),
         "evict_target_mean": round(float(y_evict.mean()), 1),
         "evict_target_std":  round(float(y_evict.std()), 1),
+        "reuse_positive_rate": round(float(y_reuse.mean()), 3),
     }
 
-    return ttl_model, evict_model, prefetch_model, metrics
+    return ttl_model, evict_model, reuse_model, metrics
 
 
 # 5. SAVE
-def save_models(ttl_model, evict_model, prefetch_model, df, metrics=None):
+def save_models(ttl_model, evict_model, reuse_model, df, metrics=None):
     print(f"\nSaving to {MODEL_DIR}/")
     bundle = {
-        "ttl_model":      ttl_model,
-        "evict_model":    evict_model,
-        "prefetch_model": prefetch_model,
-        "feature_cols":   FEATURE_COLS,
-        "route_types":    ROUTE_TYPES,
-        "prefetch_cols":  [f"prefetch_{rt}" for rt in ROUTE_TYPES],
+        "ttl_model":     ttl_model,
+        "evict_model":   evict_model,
+        "reuse_model":   reuse_model,   # replaces prefetch_model
+        "feature_cols":  FEATURE_COLS,
+        "route_types":   ROUTE_TYPES,
+        # kept for backwards compat in case app.py checks this key
+        "prefetch_cols": [],
     }
     with open(MODEL_PATH, "wb") as f:
         pickle.dump(bundle, f)
@@ -351,12 +360,16 @@ def save_models(ttl_model, evict_model, prefetch_model, df, metrics=None):
     ]
 
     meta = {
-        "trained_at":     pd.Timestamp.now().isoformat(),
-        "training_rows":  len(df),
-        "feature_cols":   FEATURE_COLS,
-        "route_types":    ROUTE_TYPES,
-        "ttl_bounds":     {"min": TTL_MIN, "max": TTL_MAX},
-        "ttl_target":     "ttl_label" if "ttl_label" in df.columns else "timestamp_gap",
+        "trained_at":       pd.Timestamp.now().isoformat(),
+        "training_rows":    len(df),
+        "feature_cols":     FEATURE_COLS,
+        "route_types":      ROUTE_TYPES,
+        "ttl_bounds":       {"min": TTL_MIN, "max": TTL_MAX},
+        "model_notes": {
+            "ttl":   "inter-arrival time target — honest traffic signal",
+            "evict": "future access count in 10-min window",
+            "reuse": "binary: will key be accessed before TTL expires?",
+        },
         "route_type_map": {r: i for i, r in enumerate(ROUTE_TYPES)},
         "page_type_map":  {
             "collection": 0, "product_detail": 1, "best_seller": 2,
@@ -397,18 +410,18 @@ def main():
         return
 
     print("=" * 55)
-    print("  LightCache — Phase 4: Model Training (v7)")
+    print("  LightCache — Phase 4: Model Training (v8)")
     print("=" * 55)
 
     df = load_data(args.data)
     df = engineer_features(df)
     df = build_targets(df)
-    ttl_model, evict_model, prefetch_model, metrics = train(df)
-    save_models(ttl_model, evict_model, prefetch_model, df, metrics)
+    ttl_model, evict_model, reuse_model, metrics = train(df)
+    save_models(ttl_model, evict_model, reuse_model, df, metrics)
     print_importance(ttl_model)
 
     print("\n" + "=" * 55)
-    print("  Training complete — 3 genuine ML models saved")
+    print("  Training complete — 3 honest ML models saved")
     print("  Next: python app.py")
     print("=" * 55)
 

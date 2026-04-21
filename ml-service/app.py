@@ -22,15 +22,14 @@ BENCHMARK_MODEL_PATH = BASE_DIR / "model" / "benchmark_results.json"
 BENCHMARK_LOGS_PATH  = BASE_DIR / "logs"  / "benchmark_results.json"
 BENCHMARK_DATA_PATH  = BASE_DIR / "logs"  / "cache_events.jsonl"
 
-# Model globals (None until trained) 
-TTL_MODEL      = None
-EVICT_MODEL    = None
-PREFETCH_MODEL = None
-FEATURE_COLS   = []
-ROUTE_TYPES    = []
-META           = {}
+# Model globals
+TTL_MODEL    = None
+EVICT_MODEL  = None
+REUSE_MODEL  = None   # replaces PREFETCH_MODEL — predicts cache reuse likelihood
+FEATURE_COLS = []
+ROUTE_TYPES  = []
+META         = {}
 
-# Default fallback values used when no model is loaded
 DEFAULT_META = {
     "trained_at":    None,
     "training_rows": 0,
@@ -42,21 +41,15 @@ DEFAULT_META = {
     "price_tier_map":  {"unknown": 0, "budget": 1, "mid": 2, "premium": 3},
 }
 
-MODEL_READY = False   # flips True once a model is successfully loaded
+MODEL_READY = False
 
 
 def try_load_model() -> bool:
-    """
-    Attempt to load the model from disk.
-    Returns True if successful, False if model does not exist yet.
-    Safe to call multiple times — always replaces globals atomically.
-    """
-    global TTL_MODEL, EVICT_MODEL, PREFETCH_MODEL, FEATURE_COLS, ROUTE_TYPES
+    global TTL_MODEL, EVICT_MODEL, REUSE_MODEL, FEATURE_COLS, ROUTE_TYPES
     global META, MODEL_READY
 
     if not MODEL_PATH.exists():
         print("  No model found yet — running in fixed-TTL fallback mode.")
-        print("   System will collect user traffic data and retrain automatically.")
         META = DEFAULT_META
         return False
 
@@ -64,28 +57,28 @@ def try_load_model() -> bool:
         with open(MODEL_PATH, "rb") as f:
             bundle = pickle.load(f)
 
-        TTL_MODEL      = bundle["ttl_model"]
-        EVICT_MODEL    = bundle["evict_model"]
-        PREFETCH_MODEL = bundle["prefetch_model"]
-        FEATURE_COLS   = bundle["feature_cols"]
-        ROUTE_TYPES    = bundle["route_types"]
+        TTL_MODEL    = bundle["ttl_model"]
+        EVICT_MODEL  = bundle["evict_model"]
+        # Support both old (prefetch_model) and new (reuse_model) bundle keys
+        REUSE_MODEL  = bundle.get("reuse_model") or bundle.get("prefetch_model")
+        FEATURE_COLS = bundle["feature_cols"]
+        ROUTE_TYPES  = bundle["route_types"]
 
         with open(META_PATH, "r") as f:
             META = json.load(f)
 
         MODEL_READY = True
         print(f"✅ Model loaded — trained on {META['training_rows']:,} rows")
-        print(f"   Trained at: {META['trained_at']}")
+        print(f"   Trained at : {META['trained_at']}")
         return True
 
     except Exception as e:
         print(f"⚠️  Model file exists but failed to load: {e}")
-        print("   Falling back to fixed-TTL mode.")
         META = DEFAULT_META
         return False
 
 
-# Schemas 
+# Schemas
 class PredictRequest(BaseModel):
     route_type:               str
     page_type:                str
@@ -107,14 +100,14 @@ class PredictRequest(BaseModel):
 
 
 class PredictResponse(BaseModel):
-    ttl_seconds:     int
-    eviction_score:  float
-    prefetch_routes: List[str]
-    inference_ms:    float
-    model_version:   str
+    ttl_seconds:        int
+    eviction_score:     float
+    prefetch_routes:    List[str]   # kept for API compat — now reuse probability buckets
+    reuse_probability:  float       # new: P(key accessed again before TTL expires)
+    inference_ms:       float
+    model_version:      str
 
 
-# Feature vector builder 
 def build_vector(req: PredictRequest) -> np.ndarray:
     route_map = META.get("route_type_map",  DEFAULT_META["route_type_map"])
     page_map  = META.get("page_type_map",   DEFAULT_META["page_type_map"])
@@ -130,9 +123,8 @@ def build_vector(req: PredictRequest) -> np.ndarray:
     day_sin  = math.sin(2 * math.pi * req.weekday / 7)
     day_cos  = math.cos(2 * math.pi * req.weekday / 7)
 
-    past_access = req.key_access_count or 1
-    log_past    = math.log1p(past_access)
-    log_ttl_used = math.log1p(req.ttl_used or 300)
+    past_access  = req.key_access_count or 1
+    log_past     = math.log1p(past_access)
     latency_log  = math.log1p(req.latency_ms or 0.0)
 
     return np.array([[
@@ -143,11 +135,10 @@ def build_vector(req: PredictRequest) -> np.ndarray:
         req.time_since_last_request or 0.0,
         req.request_interval_mean or 300.0,
         req.request_interval_std or 0.0,
-        log_ttl_used, latency_log,
+        latency_log,
     ]])
 
 
-# Predict 
 def run_predict(req: PredictRequest) -> PredictResponse:
     if not MODEL_READY:
         raise HTTPException(
@@ -158,23 +149,44 @@ def run_predict(req: PredictRequest) -> PredictResponse:
     t0 = time.perf_counter()
     X  = build_vector(req)
 
-    raw_ttl     = float(TTL_MODEL.predict(X)[0])
+    # TTL prediction
     ttl_min     = META.get("ttl_bounds", {}).get("min", 30)
     ttl_max     = META.get("ttl_bounds", {}).get("max", 1800)
+    raw_ttl     = float(TTL_MODEL.predict(X)[0])
     ttl_seconds = int(np.clip(round(raw_ttl), ttl_min, ttl_max))
 
+    # Eviction score
     raw_evict      = float(EVICT_MODEL.predict(X)[0])
     eviction_score = round(float(np.clip(raw_evict, 0, 200)), 2)
 
-    proba_list = PREFETCH_MODEL.predict_proba(X)
-    scores = []
-    for i, proba in enumerate(proba_list):
-        route = ROUTE_TYPES[i]
-        if route == req.route_type:
-            continue
-        scores.append((route, float(proba[0][1])))
-    scores.sort(key=lambda x: x[1], reverse=True)
-    prefetch_routes = [r for r, _ in scores[:3]]
+    # Cache-reuse probability
+    # High probability → key will be accessed again → worth prefetching/keeping
+    reuse_probability = 0.5
+    prefetch_routes   = []
+    if REUSE_MODEL is not None:
+        try:
+            # New reuse_model: single binary classifier
+            if hasattr(REUSE_MODEL, "predict_proba") and not hasattr(REUSE_MODEL, "estimators_"):
+                reuse_probability = round(float(REUSE_MODEL.predict_proba(X)[0][1]), 3)
+                # Translate into prefetch signal for backwards API compat
+                if reuse_probability >= 0.8:
+                    prefetch_routes = [req.route_type]
+                elif reuse_probability >= 0.6:
+                    prefetch_routes = []
+            # Legacy MultiOutputClassifier (old prefetch model)
+            else:
+                proba_list = REUSE_MODEL.predict_proba(X)
+                scores = []
+                for i, proba in enumerate(proba_list):
+                    route = ROUTE_TYPES[i] if i < len(ROUTE_TYPES) else str(i)
+                    if route == req.route_type:
+                        continue
+                    scores.append((route, float(proba[0][1])))
+                scores.sort(key=lambda x: x[1], reverse=True)
+                prefetch_routes   = [r for r, _ in scores[:3]]
+                reuse_probability = round(scores[0][1] if scores else 0.5, 3)
+        except Exception:
+            pass
 
     inference_ms = round((time.perf_counter() - t0) * 1000, 3)
 
@@ -182,12 +194,12 @@ def run_predict(req: PredictRequest) -> PredictResponse:
         ttl_seconds=ttl_seconds,
         eviction_score=eviction_score,
         prefetch_routes=prefetch_routes,
+        reuse_probability=reuse_probability,
         inference_ms=inference_ms,
         model_version=META.get("trained_at", "no-model"),
     )
 
 
-# Benchmark
 def run_benchmark_if_needed():
     import subprocess, shutil
 
@@ -215,13 +227,10 @@ def run_benchmark_if_needed():
         print(f"Benchmark failed (non-critical): {e}")
 
 
-# Lifespan
 @asynccontextmanager
 async def lifespan(app):
-    # Try to load model — OK if it doesn't exist yet
     try_load_model()
 
-    # If model is ready, do a warmup prediction
     if MODEL_READY:
         try:
             dummy = PredictRequest(
@@ -234,25 +243,21 @@ async def lifespan(app):
         except Exception as e:
             print(f"Warmup failed (non-critical): {e}")
 
-    # Auto-run benchmark in background if data exists
     import threading
     threading.Thread(target=run_benchmark_if_needed, daemon=True).start()
 
     yield
 
 
-# App 
 app = FastAPI(
     title="LightCache ML Service",
-    description="Dynamic TTL, eviction score and prefetch predictions",
-    version="3.0.0",
+    description="Dynamic TTL, eviction score and cache-reuse predictions",
+    version="4.0.0",
     lifespan=lifespan,
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
-
-# Endpoints 
 
 @app.get("/health")
 def health():
@@ -278,6 +283,7 @@ def model_info():
         "features":      FEATURE_COLS,
         "route_types":   ROUTE_TYPES,
         "ttl_bounds":    META.get("ttl_bounds"),
+        "model_notes":   META.get("model_notes", {}),
     }
 
 
@@ -316,8 +322,7 @@ def readiness():
 
 @app.post("/admin/reload")
 def reload_model():
-    """Hot-reload model from disk without restarting. Called after retraining."""
-    global TTL_MODEL, EVICT_MODEL, PREFETCH_MODEL, FEATURE_COLS, ROUTE_TYPES
+    global TTL_MODEL, EVICT_MODEL, REUSE_MODEL, FEATURE_COLS, ROUTE_TYPES
     global META, MODEL_READY
 
     if not MODEL_PATH.exists():
@@ -336,7 +341,6 @@ def reload_model():
 
 @app.post("/admin/trigger-retrain")
 def trigger_retrain():
-    """Force immediate retraining from the admin dashboard."""
     import subprocess
 
     if not BENCHMARK_DATA_PATH.exists():
@@ -372,7 +376,9 @@ def trigger_retrain():
             "trained_at":    META.get("trained_at"),
             "ttl_mae":       fresh.get("ttl_mae"),
             "ttl_r2":        fresh.get("ttl_r2"),
-            "message":       "Model retrained and hot-reloaded. You can now activate ML mode.",
+            "reuse_f1":      fresh.get("reuse_f1"),
+            "reuse_auc":     fresh.get("reuse_auc"),
+            "message":       "Model retrained and hot-reloaded.",
         }
     except HTTPException:
         raise
@@ -384,7 +390,6 @@ def trigger_retrain():
 
 @app.post("/admin/simulate-from-real")
 def simulate_from_real():
-    """Generate synthetic rows mirroring real traffic distribution."""
     import random, math as _math
 
     MIN_ROWS  = int(os.getenv("MIN_ROWS_TO_RETRAIN", "1000"))
@@ -418,7 +423,7 @@ def simulate_from_real():
     hour_choices   = [int(r.get("hour_of_day",   12)) for r in real_rows]
 
     ttl_mean = sum(ttl_values) / len(ttl_values)
-    ttl_std  = _math.sqrt(sum((x-ttl_mean)**2 for x in ttl_values)  / len(ttl_values)) or 30
+    ttl_std  = _math.sqrt(sum((x-ttl_mean)**2 for x in ttl_values) / len(ttl_values)) or 30
     lat_mean = sum(latency_values) / len(latency_values)
     lat_std  = _math.sqrt(sum((x-lat_mean)**2 for x in latency_values) / len(latency_values)) or 20
 
@@ -456,7 +461,6 @@ def simulate_from_real():
 
 @app.post("/admin/reset-data")
 def reset_data():
-    """Wipe all training data and model artefacts to start fresh."""
     deleted = []
     for p in [
         BENCHMARK_DATA_PATH, MODEL_PATH, META_PATH,
@@ -475,8 +479,7 @@ def reset_data():
     return {
         "status":  "reset",
         "deleted": deleted,
-        "message": "All data and model artefacts wiped. "
-                   "System will retrain once enough real traffic is collected.",
+        "message": "All data and model artefacts wiped.",
     }
 
 
@@ -511,6 +514,7 @@ def model_metrics():
         "training_rows":       meta.get("training_rows"),
         "ttl_bounds":          meta.get("ttl_bounds"),
         "metrics":             meta.get("metrics", {}),
+        "model_notes":         meta.get("model_notes", {}),
         "feature_importances": meta.get("feature_importances", []),
         "feature_cols":        meta.get("feature_cols", []),
         "route_types":         meta.get("route_types", []),
