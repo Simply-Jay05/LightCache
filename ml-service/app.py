@@ -22,7 +22,9 @@ BENCHMARK_MODEL_PATH = BASE_DIR / "model" / "benchmark_results.json"
 BENCHMARK_LOGS_PATH  = BASE_DIR / "logs"  / "benchmark_results.json"
 BENCHMARK_DATA_PATH  = BASE_DIR / "logs"  / "cache_events.jsonl"
 
-# Model globals (None until trained) 
+# Model globals (None until trained)
+# TTL_MODEL is now a dict with "stage1_classifier" and "stage2_regressor"
+# for the two-stage hurdle model, OR a plain LGBMRegressor for old pickles.
 TTL_MODEL      = None
 EVICT_MODEL    = None
 PREFETCH_MODEL = None
@@ -43,6 +45,31 @@ DEFAULT_META = {
 }
 
 MODEL_READY = False   # flips True once a model is successfully loaded
+
+
+def predict_ttl(ttl_model, X: np.ndarray, ttl_min: int = 30, ttl_max: int = 1800) -> float:
+    """
+    Unified TTL prediction that handles both model formats:
+      - New format: dict with stage1_classifier + stage2_regressor (two-stage hurdle)
+      - Old format: plain LGBMRegressor (backwards compatible with old pickles)
+    """
+    # New two-stage hurdle model
+    if isinstance(ttl_model, dict) and "stage1_classifier" in ttl_model:
+        clf  = ttl_model["stage1_classifier"]
+        reg  = ttl_model["stage2_regressor"]
+        tmax = ttl_model.get("ttl_max", ttl_max)
+
+        prob_capped = clf.predict_proba(X)[:, 1]
+        is_capped   = prob_capped[0] >= 0.5
+
+        if is_capped:
+            return float(tmax)
+
+        raw = float(reg.predict(X)[0])
+        return float(np.clip(raw, ttl_min, tmax - 1))
+
+    # Legacy single-model format (backwards compatible)
+    return float(ttl_model.predict(X)[0])
 
 
 def try_load_model() -> bool:
@@ -74,8 +101,16 @@ def try_load_model() -> bool:
             META = json.load(f)
 
         MODEL_READY = True
+
+        # Log which TTL model type was loaded
+        ttl_type = (
+            "two-stage hurdle"
+            if isinstance(TTL_MODEL, dict) and "stage1_classifier" in TTL_MODEL
+            else "single regressor (legacy)"
+        )
         print(f"✅ Model loaded — trained on {META['training_rows']:,} rows")
-        print(f"   Trained at: {META['trained_at']}")
+        print(f"   Trained at : {META['trained_at']}")
+        print(f"   TTL model  : {ttl_type}")
         return True
 
     except Exception as e:
@@ -85,7 +120,7 @@ def try_load_model() -> bool:
         return False
 
 
-# Schemas 
+# Schemas
 class PredictRequest(BaseModel):
     route_type:               str
     page_type:                str
@@ -114,7 +149,7 @@ class PredictResponse(BaseModel):
     model_version:   str
 
 
-# Feature vector builder 
+# Feature vector builder
 def build_vector(req: PredictRequest) -> np.ndarray:
     route_map = META.get("route_type_map",  DEFAULT_META["route_type_map"])
     page_map  = META.get("page_type_map",   DEFAULT_META["page_type_map"])
@@ -144,7 +179,7 @@ def build_vector(req: PredictRequest) -> np.ndarray:
     ]])
 
 
-# Predict 
+# Predict
 def run_predict(req: PredictRequest) -> PredictResponse:
     if not MODEL_READY:
         raise HTTPException(
@@ -155,10 +190,12 @@ def run_predict(req: PredictRequest) -> PredictResponse:
     t0 = time.perf_counter()
     X  = build_vector(req)
 
-    raw_ttl     = float(TTL_MODEL.predict(X)[0])
+    # ── TTL: works with both two-stage and legacy single-model formats ────
     ttl_min     = META.get("ttl_bounds", {}).get("min", 30)
     ttl_max     = META.get("ttl_bounds", {}).get("max", 1800)
+    raw_ttl     = predict_ttl(TTL_MODEL, X, ttl_min=ttl_min, ttl_max=ttl_max)
     ttl_seconds = int(np.clip(round(raw_ttl), ttl_min, ttl_max))
+    # ──────────────────────────────────────────────────────────────────────
 
     raw_evict      = float(EVICT_MODEL.predict(X)[0])
     eviction_score = round(float(np.clip(raw_evict, 0, 200)), 2)
@@ -215,10 +252,8 @@ def run_benchmark_if_needed():
 # Lifespan
 @asynccontextmanager
 async def lifespan(app):
-    # Try to load model — OK if it doesn't exist yet
     try_load_model()
 
-    # If model is ready, do a warmup prediction
     if MODEL_READY:
         try:
             dummy = PredictRequest(
@@ -231,14 +266,13 @@ async def lifespan(app):
         except Exception as e:
             print(f"Warmup failed (non-critical): {e}")
 
-    # Auto-run benchmark in background if data exists
     import threading
     threading.Thread(target=run_benchmark_if_needed, daemon=True).start()
 
     yield
 
 
-# App 
+# App
 app = FastAPI(
     title="LightCache ML Service",
     description="Dynamic TTL, eviction score and prefetch predictions",
@@ -249,7 +283,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
 
-# Endpoints 
+# Endpoints
 
 @app.get("/health")
 def health():
@@ -268,6 +302,12 @@ def predict(req: PredictRequest):
 
 @app.get("/model/info")
 def model_info():
+    ttl_type = (
+        "two-stage hurdle"
+        if isinstance(TTL_MODEL, dict) and "stage1_classifier" in TTL_MODEL
+        else "single regressor (legacy)" if TTL_MODEL is not None
+        else "not loaded"
+    )
     return {
         "model_ready":   MODEL_READY,
         "trained_at":    META.get("trained_at"),
@@ -275,6 +315,7 @@ def model_info():
         "features":      FEATURE_COLS,
         "route_types":   ROUTE_TYPES,
         "ttl_bounds":    META.get("ttl_bounds"),
+        "ttl_model_type": ttl_type,
     }
 
 

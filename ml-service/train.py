@@ -34,7 +34,7 @@ ROUTE_TYPES = [
 ]
 
 
-# 1. LOAD
+# 1. LOAD  (unchanged)
 def load_data(path: Path) -> pd.DataFrame:
     print(f"Loading data from: {path}")
     records, skipped = [], 0
@@ -58,7 +58,7 @@ def load_data(path: Path) -> pd.DataFrame:
     return df
 
 
-# 2. FEATURE ENGINEERING
+# 2. FEATURE ENGINEERING  (original features, unchanged)
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     print("\nEngineering features...")
     df = df.copy()
@@ -119,34 +119,6 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         .clip(0, TTL_MAX)
     )
 
-    # ── NEW FEATURES: 3 additional TTL-specific signals ───────────────────
-    #
-    # request_interval_min: shortest observed gap for this cache key.
-    # Acts as a lower-bound hint — "this key is sometimes requested fast".
-    def rolling_interval_min(group):
-        intervals = group.diff().shift(1)
-        return intervals.rolling(10, min_periods=1).min().fillna(300)
-
-    df["request_interval_min"] = (
-        df.groupby("cache_key")["timestamp"]
-        .transform(lambda x: rolling_interval_min(x) / 1000.0)
-        .clip(0, TTL_MAX)
-    )
-
-    # interval_cv: coefficient of variation (std / mean).
-    # High CV = erratic access = model should be more conservative on TTL.
-    df["interval_cv"] = (
-        df["request_interval_std"] / (df["request_interval_mean"] + 1e-6)
-    ).clip(0, 10)
-
-    # recent_interval: gap from 2 requests ago to now.
-    # Captures short-term rhythm shifts that a rolling mean misses entirely.
-    df["prev2_request_ts"] = df.groupby("cache_key")["timestamp"].shift(2)
-    df["recent_interval"] = (
-        (df["timestamp"] - df["prev2_request_ts"]) / 1000.0
-    ).fillna(df["request_interval_mean"]).clip(0, TTL_MAX)
-    # ──────────────────────────────────────────────────────────────────────
-
     print(f"   Done: {df.shape[1]} columns, {len(df):,} rows")
     return df
 
@@ -193,7 +165,8 @@ def build_targets(df: pd.DataFrame) -> pd.DataFrame:
         df[f"prefetch_{rt}"] = (df["next_route"] == rt).astype(int)
 
     print(f"   dynamic_ttl    — mean: {df['dynamic_ttl'].mean():.0f}s  "
-          f"range: {df['dynamic_ttl'].min():.0f}–{df['dynamic_ttl'].max():.0f}s")
+          f"std: {df['dynamic_ttl'].std():.0f}s  "
+          f"pct@MAX: {(df['dynamic_ttl']==TTL_MAX).mean()*100:.1f}%")
     print(f"   eviction_score — mean: {df['eviction_score'].mean():.1f}  "
           f"range: {df['eviction_score'].min():.1f}–{df['eviction_score'].max():.1f}")
     print(f"   prefetch       — {df['next_route'].notna().sum():,} sequenced rows")
@@ -203,17 +176,11 @@ def build_targets(df: pd.DataFrame) -> pd.DataFrame:
 
 # 4. TRAIN
 FEATURE_COLS = [
-    # Context
     "route_type_enc", "page_type_enc", "price_tier_enc", "is_single_item",
-    # Time of day
     "hour_of_day", "weekday", "is_peak_hour",
     "hour_sin", "hour_cos", "day_sin", "day_cos",
-    # Access history
     "past_access_count", "log_past_count", "rolling_hit_rate",
-    # Inter-arrival (original)
     "time_since_last_request", "request_interval_mean", "request_interval_std",
-    # Inter-arrival (new)
-    "request_interval_min", "interval_cv", "recent_interval",
 ]
 
 
@@ -221,76 +188,94 @@ def train(df: pd.DataFrame):
     print("\nTraining models...")
     X = df[FEATURE_COLS].fillna(0)
 
-    # ── TTL distribution diagnostic ───────────────────────────────────────
+    # TTL distribution diagnostic
     ttl = df["dynamic_ttl"]
-    p10, p25, p50, p75, p90, p95 = np.percentile(ttl, [10, 25, 50, 75, 90, 95])
-    pct_capped = (ttl == TTL_MAX).mean() * 100
-    print(f"\n   TTL distribution: p10={p10:.0f}  p25={p25:.0f}  p50={p50:.0f}"
-          f"  p75={p75:.0f}  p90={p90:.0f}  p95={p95:.0f}")
-    print(f"   {pct_capped:.1f}% of rows capped at TTL_MAX ({TTL_MAX}s)")
-    # ──────────────────────────────────────────────────────────────────────
+    pct_max = (ttl == TTL_MAX).mean() * 100
+    print(f"\n   TTL pct@MAX={pct_max:.1f}%  "
+          f"median={ttl.median():.0f}s  mean={ttl.mean():.0f}s  std={ttl.std():.0f}s")
 
-    # =====================================================================
-    # Model 1: Dynamic TTL  — v5 strategy
+    # Two-Stage Hurdle Model:
+    #   Stage 1 (Classifier):
+    #     Predict whether a row will hit TTL_MAX ("censored") or not.
+    #     If yes → output TTL_MAX directly (no regression needed).
     #
-    # Problem diagnosis:
-    #   std=754s means the target is *very* wide and likely bimodal —
-    #   short-lived keys (TTL~30–300s) and long-lived keys (TTL~1800s).
-    #   Log-transform optimises well for small values but hurts R² on the
-    #   original scale.  L2 loss chases outliers.
+    #   Stage 2 (Regressor):
+    #     Trained ONLY on the non-capped rows (clean, real signal).
+    #     Predicts the actual time-until-next-request for live keys.
     #
-    # Fix:
-    #   A. Huber loss — quadratic for typical errors, linear for outliers.
-    #      Native-scale predictions, better R² than log-transform.
-    #   B. 95th-pct clip on training targets — removes the wall of TTL_MAX
-    #      rows that are "never seen again" (censored, not real signal).
-    #   C. 3 new inter-arrival features (min, cv, recent) give the model
-    #      richer access-pattern signal without any data leakage.
-    #   D. 1000 trees + lr=0.01 + early stopping for best generalisation.
-    # =====================================================================
+    #   Final prediction = Stage1 decides; Stage2 fills in the real values.
+    #   This cleanly separates noise from signal at the data level.
+
     y_ttl = df["dynamic_ttl"]
     Xtr, Xte, ytr, yte = train_test_split(
         X, y_ttl, test_size=0.2, random_state=42, shuffle=True
     )
 
-    # B: clip training targets at 95th pct (test set stays untouched)
-    ttl_cap = float(np.percentile(ytr, 95))
-    print(f"   95th-pct training cap: {ttl_cap:.0f}s")
-    ytr_clipped = ytr.clip(upper=ttl_cap)
+    # Stage 1: Is this row censored (will it hit TTL_MAX)? 
+    is_capped_tr = (ytr == TTL_MAX).astype(int)
+    is_capped_te = (yte == TTL_MAX).astype(int)
+    pct_capped_tr = is_capped_tr.mean() * 100
+    print(f"   Stage-1: {pct_capped_tr:.1f}% of train rows are TTL_MAX (censored)")
 
-    ttl_model = LGBMRegressor(
-        objective="huber",       # A: robust to large TTL outliers
-        alpha=0.9,               # huber slope crossover at 90th pct
-        n_estimators=1000,       # D: large ensemble
-        learning_rate=0.01,      # D: slow + many trees
-        max_depth=6,
-        num_leaves=40,
+    ttl_stage1 = LGBMClassifier(
+        n_estimators=400,
+        learning_rate=0.03,
+        max_depth=5,
+        num_leaves=25,
         min_child_samples=20,
         subsample=0.8,
-        subsample_freq=1,
-        colsample_bytree=0.75,
-        reg_alpha=0.1,
-        reg_lambda=0.2,
-        n_iter_no_change=60,     # D: early stopping
+        colsample_bytree=0.8,
         random_state=42,
         verbose=-1,
     )
-    ttl_model.fit(
-        Xtr, ytr_clipped,
-        eval_set=[(Xte, yte)],
+    ttl_stage1.fit(Xtr, is_capped_tr)
+    prob_capped = ttl_stage1.predict_proba(Xte)[:, 1]
+    pred_capped = (prob_capped >= 0.5).astype(int)
+
+    from sklearn.metrics import accuracy_score
+    s1_acc = accuracy_score(is_capped_te, pred_capped)
+    print(f"   Stage-1 accuracy: {s1_acc:.3f}")
+
+    # ── Stage 2: Regressor on clean (non-capped) rows only ───────────────
+    mask_tr = (ytr < TTL_MAX)
+    mask_te = (yte < TTL_MAX)
+    pct_real = mask_tr.mean() * 100
+    print(f"   Stage-2: training on {pct_real:.1f}% of rows (real TTL signal)")
+
+    ttl_stage2 = LGBMRegressor(
+        objective="regression",  # clean L2 — no tricks needed on pure signal
+        n_estimators=600,
+        learning_rate=0.02,
+        max_depth=6,
+        num_leaves=40,
+        min_child_samples=15,
+        subsample=0.8,
+        subsample_freq=1,
+        colsample_bytree=0.8,
+        reg_alpha=0.05,
+        reg_lambda=0.1,
+        n_iter_no_change=50,
+        random_state=42,
+        verbose=-1,
+    )
+    ttl_stage2.fit(
+        Xtr[mask_tr], ytr[mask_tr],
+        eval_set=[(Xte[mask_te], yte[mask_te])],
     )
 
-    ttl_preds = ttl_model.predict(Xte).clip(TTL_MIN, TTL_MAX)
-    ttl_mae   = round(float(mean_absolute_error(yte, ttl_preds)), 2)
-    ttl_r2    = round(float(r2_score(yte, ttl_preds)), 3)
-    print(f"\n   [1] TTL Regressor")
+    # Combine stages 
+    raw_preds = ttl_stage2.predict(Xte).clip(TTL_MIN, TTL_MAX - 1)
+    ttl_preds = np.where(pred_capped == 1, float(TTL_MAX), raw_preds)
+
+    ttl_mae = round(float(mean_absolute_error(yte, ttl_preds)), 2)
+    ttl_r2  = round(float(r2_score(yte, ttl_preds)), 3)
+    print(f"\n   [1] TTL Regressor (two-stage)")
     print(f"       MAE : {ttl_mae}s")
     print(f"       R2  : {ttl_r2}")
     print(f"       (Expected: R2 0.3–0.6)")
 
-    # =====================================================================
-    # Model 2: Eviction Score  — UNCHANGED (R²=0.986)
-    # =====================================================================
+   
+    # Model 2: Eviction Score  
     y_evict = df["eviction_score"]
     Xtr2, Xte2, ytr2, yte2 = train_test_split(
         X, y_evict, test_size=0.2, random_state=42, shuffle=True
@@ -310,9 +295,8 @@ def train(df: pd.DataFrame):
     print(f"       R2  : {evict_r2}")
     print(f"       (Expected: R2 0.4–0.75)")
 
-    # =====================================================================
+   
     # Model 3: Prefetch Classifier  — UNCHANGED (F1=1.0)
-    # =====================================================================
     prefetch_mask = df["next_route"].notna()
     X_pref = X[prefetch_mask]
     prefetch_cols = [f"prefetch_{rt}" for rt in ROUTE_TYPES]
@@ -335,27 +319,36 @@ def train(df: pd.DataFrame):
     print(f"       (Expected: F1 0.5–0.8)")
 
     metrics = {
-        "ttl_mae":        ttl_mae,
-        "ttl_r2":         ttl_r2,
-        "evict_mae":      evict_mae,
-        "evict_r2":       evict_r2,
-        "prefetch_f1":    pref_f1,
-        "train_rows":     len(X),
-        "test_rows":      len(Xte),
+        "ttl_mae":           ttl_mae,
+        "ttl_r2":            ttl_r2,
+        "ttl_stage1_acc":    round(s1_acc, 3),
+        "evict_mae":         evict_mae,
+        "evict_r2":          evict_r2,
+        "prefetch_f1":       pref_f1,
+        "train_rows":        len(X),
+        "test_rows":         len(Xte),
         "ttl_target_mean":   round(float(y_ttl.mean()), 1),
         "ttl_target_std":    round(float(y_ttl.std()), 1),
         "evict_target_mean": round(float(y_evict.mean()), 1),
         "evict_target_std":  round(float(y_evict.std()), 1),
     }
 
-    return ttl_model, evict_model, prefetch_model, metrics
+    # Bundle both TTL sub-models together
+    return (ttl_stage1, ttl_stage2), evict_model, prefetch_model, metrics
 
 
-# 5. SAVE  (unchanged)
-def save_models(ttl_model, evict_model, prefetch_model, df, metrics=None):
+# 5. SAVE
+def save_models(ttl_bundle, evict_model, prefetch_model, df, metrics=None):
+    ttl_stage1, ttl_stage2 = ttl_bundle
     print(f"\nSaving to {MODEL_DIR}/")
+
     bundle = {
-        "ttl_model":      ttl_model,
+        # Store as a dict so the inference layer can call both stages
+        "ttl_model": {
+            "stage1_classifier": ttl_stage1,
+            "stage2_regressor":  ttl_stage2,
+            "ttl_max":           TTL_MAX,
+        },
         "evict_model":    evict_model,
         "prefetch_model": prefetch_model,
         "feature_cols":   FEATURE_COLS,
@@ -365,7 +358,7 @@ def save_models(ttl_model, evict_model, prefetch_model, df, metrics=None):
     with open(MODEL_PATH, "wb") as f:
         pickle.dump(bundle, f)
 
-    raw_imp  = ttl_model.feature_importances_
+    raw_imp  = ttl_stage2.feature_importances_
     max_imp  = float(max(raw_imp)) if max(raw_imp) > 0 else 1.0
     feat_imp = [
         {"feature": feat, "importance": round(float(imp), 4),
@@ -376,18 +369,19 @@ def save_models(ttl_model, evict_model, prefetch_model, df, metrics=None):
     ]
 
     meta = {
-        "trained_at":     pd.Timestamp.now().isoformat(),
-        "training_rows":  len(df),
-        "feature_cols":   FEATURE_COLS,
-        "route_types":    ROUTE_TYPES,
-        "ttl_bounds":     {"min": TTL_MIN, "max": TTL_MAX},
-        "route_type_map": {r: i for i, r in enumerate(ROUTE_TYPES)},
-        "page_type_map":  {
+        "trained_at":       pd.Timestamp.now().isoformat(),
+        "training_rows":    len(df),
+        "feature_cols":     FEATURE_COLS,
+        "route_types":      ROUTE_TYPES,
+        "ttl_bounds":       {"min": TTL_MIN, "max": TTL_MAX},
+        "ttl_model_type":   "two_stage_hurdle",
+        "route_type_map":   {r: i for i, r in enumerate(ROUTE_TYPES)},
+        "page_type_map":    {
             "collection": 0, "product_detail": 1, "best_seller": 2,
             "new_arrivals": 3, "similar": 4,
         },
-        "price_tier_map": {"unknown": 0, "budget": 1, "mid": 2, "premium": 3},
-        "metrics": metrics or {},
+        "price_tier_map":   {"unknown": 0, "budget": 1, "mid": 2, "premium": 3},
+        "metrics":          metrics or {},
         "feature_importances": feat_imp,
     }
     with open(META_PATH, "w") as f:
@@ -397,11 +391,12 @@ def save_models(ttl_model, evict_model, prefetch_model, df, metrics=None):
     print(f"   Meta saved  : {META_PATH.name}")
 
 
-# 6. FEATURE IMPORTANCE  (unchanged)
-def print_importance(ttl_model):
-    print("\nTop features — TTL model:")
+# 6. FEATURE IMPORTANCE
+def print_importance(ttl_bundle):
+    _, ttl_stage2 = ttl_bundle
+    print("\nTop features — TTL stage-2 regressor:")
     pairs = sorted(
-        zip(FEATURE_COLS, ttl_model.feature_importances_),
+        zip(FEATURE_COLS, ttl_stage2.feature_importances_),
         key=lambda x: x[1], reverse=True,
     )
     max_imp = max(v for _, v in pairs)
@@ -421,15 +416,15 @@ def main():
         return
 
     print("=" * 55)
-    print("  LightCache — Phase 4: Model Training (v5)")
+    print("  LightCache — Phase 4: Model Training (v6)")
     print("=" * 55)
 
     df = load_data(args.data)
     df = engineer_features(df)
     df = build_targets(df)
-    ttl_model, evict_model, prefetch_model, metrics = train(df)
-    save_models(ttl_model, evict_model, prefetch_model, df, metrics)
-    print_importance(ttl_model)
+    ttl_bundle, evict_model, prefetch_model, metrics = train(df)
+    save_models(ttl_bundle, evict_model, prefetch_model, df, metrics)
+    print_importance(ttl_bundle)
 
     print("\n" + "=" * 55)
     print("  Training complete — 3 genuine ML models saved")
