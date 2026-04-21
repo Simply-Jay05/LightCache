@@ -33,7 +33,7 @@ ROUTE_TYPES = [
 ]
 
 
-# 1. LOAD
+# 1. LOAD 
 def load_data(path: Path) -> pd.DataFrame:
     print(f"Loading data from: {path}")
     records, skipped = [], 0
@@ -57,7 +57,7 @@ def load_data(path: Path) -> pd.DataFrame:
     return df
 
 
-# 2. FEATURE ENGINEERING
+# 2. FEATURE ENGINEERING 
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     print("\nEngineering features...")
     df = df.copy()
@@ -80,10 +80,7 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         ["product_single", "best_seller"]
     ).astype(int)
 
-    # ── Cache-key prefix (structural signal) ──────────────────────────────
-    # "products:list:" vs "products:single:" vs "products:similar:" vs
-    # "products:best-seller" vs "products:new-arrivals"
-    # Each prefix maps to a different typical TTL regime.
+    # Cache-key prefix — structural TTL regime signal
     prefix_map = {
         "products:list":        0,
         "products:single":      1,
@@ -98,7 +95,7 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         return 0
     df["cache_key_prefix_enc"] = df["cache_key"].apply(get_prefix_enc)
 
-    # ── Time features ──────────────────────────────────────────────────────
+    # Time features
     df["hour_of_day"]  = df["hour_of_day"].astype(int).clip(0, 23)
     df["weekday"]      = df["weekday"].astype(int).clip(0, 6)
     df["is_peak_hour"] = df["is_peak_hour"].astype(int)
@@ -108,15 +105,10 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     df["day_sin"]  = np.sin(2 * np.pi * df["weekday"] / 7)
     df["day_cos"]  = np.cos(2 * np.pi * df["weekday"] / 7)
 
-    # ── Rule-based TTL anchor (safe prior — computed before ML runs) ─────────
-    # ttl_label: the backend's rule-based anchor TTL, computed before /predict
-    #            is called. Safe to use as a feature forever — it will never
-    #            reflect the ML model's own past outputs.
-    # ttl_used is intentionally excluded: once ML mode is active, ttl_used
-    #            becomes the ML model's own prediction, creating a feedback loop.
+    # Rule-based TTL anchor — safe prior, never contaminated by ML outputs
     df["ttl_label_log"] = np.log1p(df["ttl_label"].clip(TTL_MIN, TTL_MAX))
 
-    # ── Access history (past-only, no leakage) ─────────────────────────────
+    # Access history (past-only, no leakage)
     df["past_access_count"] = df.groupby("cache_key").cumcount() + 1
     df["log_past_count"]    = np.log1p(df["past_access_count"])
 
@@ -126,14 +118,13 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         .fillna(0.5)
     )
 
-    # ── Route-level hit rate (not just key-level) ──────────────────────────
     df["route_hit_rate"] = (
         df.groupby("route_type")["is_hit"]
         .transform(lambda x: x.shift(1).rolling(20, min_periods=1).mean())
         .fillna(0.5)
     )
 
-    # ── Inter-arrival timing ───────────────────────────────────────────────
+    # Inter-arrival timing
     df["prev_request_ts"] = df.groupby("cache_key")["timestamp"].shift(1)
     df["time_since_last_request"] = (
         (df["timestamp"] - df["prev_request_ts"]) / 1000.0
@@ -159,73 +150,57 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         .clip(0, TTL_MAX)
     )
 
-    # ── Log of inter-arrival mean (reduces skew) ───────────────────────────
     df["interval_mean_log"] = np.log1p(df["request_interval_mean"])
-
-    # ── Latency signal ─────────────────────────────────────────────────────
-    df["latency_log"] = np.log1p(df["latency_ms"].clip(0, 5000))
+    df["latency_log"]       = np.log1p(df["latency_ms"].clip(0, 5000))
 
     print(f"   Done: {df.shape[1]} columns, {len(df):,} rows")
     return df
 
 
-# 3. BUILD TARGETS
+# 3. BUILD TARGETS 
 def build_targets(df: pd.DataFrame) -> pd.DataFrame:
     print("\nBuilding targets...")
     df = df.copy()
 
-    # ── Target 1: dynamic_ttl ──────────────────────────────────────────────
-    # Strategy: learn a MULTIPLIER on the rule-based ttl_label anchor.
-    #
-    # Raw inter-arrival time (mean 532s, std 738s, CV=1.38) is too noisy
-    # to predict directly with 5,900 rows — R² collapses to ~0.008 because
-    # most cache keys appear only once or twice, making their "next access
-    # time" essentially random noise with no learnable signal.
-    #
-    # Instead we compute: dynamic_ttl = ttl_label * adjustment_factor
-    # where adjustment_factor is derived from observed hit/miss patterns:
-    #   - HIT on this key  → key IS being accessed within its TTL → keep or raise TTL
-    #   - MISS on this key → key expired before reuse → consider raising TTL
-    #   - High rolling hit rate → pattern is stable → ttl_label is well-calibrated
-    #   - Low rolling hit rate  → volatile access → scale TTL down conservatively
-    #
-    # This gives a well-distributed, learnable target (std ~100–150s)
-    # that the model can improve on with traffic context features.
-
-    # Base: start from the rule-based anchor
-    df["dynamic_ttl"] = df["ttl_label"].clip(TTL_MIN, TTL_MAX)
-
-    # rolling_hit_rate is already computed in engineer_features (past-only).
-    # Use it to scale the anchor: high hit rate → anchor is working, nudge up;
-    # low hit rate → anchor is too high or demand is volatile, nudge down.
-    # Scale factor range: 0.6× (very low hit rate) to 1.4× (very high hit rate)
-    hit_scale = 0.6 + (df["rolling_hit_rate"].clip(0, 1) * 0.8)
-
-    # For HIT events: the key was accessed before expiry — TTL was sufficient.
-    # Reward with a small upward adjustment.
-    # For MISS events: key expired or was evicted — TTL may have been too short
-    # or demand dropped. Use hit_scale alone (no extra reward).
-    hit_bonus = np.where(df["is_hit"] == 1, 1.1, 1.0)
-
-    # Past access count signal: frequently-accessed keys deserve longer TTL
-    # log1p-normalised to [1.0, ~1.3] range so it doesn't dominate
-    access_scale = 1.0 + (np.log1p(df["past_access_count"].clip(1, 50)) /
-                          np.log1p(50) * 0.3)
-
-    raw_ttl = df["dynamic_ttl"] * hit_scale * hit_bonus * access_scale
-    df["dynamic_ttl"] = raw_ttl.clip(TTL_MIN, TTL_MAX)
-
-    # ── next_request_ts needed by targets 2 & 3 ───────────────────────────
     df["next_request_ts"] = df.groupby("cache_key")["timestamp"].shift(-1)
+    df["raw_inter_arrival"] = (
+        (df["next_request_ts"] - df["timestamp"]) / 1000.0
+    ).clip(TTL_MIN, TTL_MAX)
 
-    # ── Target 2: eviction_score ───────────────────────────────────────────
+    # Fill last-access rows with the per-route median
+    route_medians = df.groupby("route_type")["raw_inter_arrival"].transform("median")
+    global_median = float(df["raw_inter_arrival"].median())
+    if pd.isna(global_median):
+        global_median = 300.0
+    df["raw_inter_arrival"] = df["raw_inter_arrival"].fillna(
+        route_medians.fillna(global_median)
+    )
+
+    # Per-route rolling median (window 30, at least 3 obs)
+    def route_rolling_median(group):
+        rolled = group.rolling(30, min_periods=3).median()
+        return rolled.fillna(group.expanding().median())
+
+    df["route_rolling_median"] = (
+        df.groupby("route_type")["raw_inter_arrival"]
+        .transform(route_rolling_median)
+        .fillna(global_median)
+    )
+
+    # Blend: 70% traffic rhythm + 30% rule-based anchor
+    ttl_label_clipped = df["ttl_label"].clip(TTL_MIN, TTL_MAX)
+    df["dynamic_ttl"] = (
+        0.70 * df["route_rolling_median"] + 0.30 * ttl_label_clipped
+    ).clip(TTL_MIN, TTL_MAX)
+
+    # Target 2: eviction_score 
     WINDOW_MS = 10 * 60 * 1000
 
     def future_access_count(group):
-        ts = group["timestamp"].values
+        ts     = group["timestamp"].values
         counts = np.zeros(len(ts), dtype=float)
         for i in range(len(ts)):
-            mask = (ts > ts[i]) & (ts <= ts[i] + WINDOW_MS)
+            mask      = (ts > ts[i]) & (ts <= ts[i] + WINDOW_MS)
             counts[i] = mask.sum()
         return pd.Series(counts, index=group.index)
 
@@ -240,22 +215,22 @@ def build_targets(df: pd.DataFrame) -> pd.DataFrame:
         (df["future_access_count"] / max_count * 200).clip(0, 200)
     )
 
-    # ── Target 3: cache_reuse ──────────────────────────────────────────────
-    df["next_gap_s"] = (df["next_request_ts"] - df["timestamp"]) / 1000.0
+    # Target 3: cache_reuse 
+    df["next_gap_s"]  = (df["next_request_ts"] - df["timestamp"]) / 1000.0
     df["cache_reuse"] = (df["next_gap_s"] <= df["ttl_used"]).astype(int)
     df["cache_reuse"] = df["cache_reuse"].fillna(0).astype(int)
 
-    print(f"   dynamic_ttl  — mean: {df['dynamic_ttl'].mean():.0f}s  "
+    print(f"   dynamic_ttl    — mean: {df['dynamic_ttl'].mean():.0f}s  "
           f"std: {df['dynamic_ttl'].std():.0f}s  "
           f"range: {df['dynamic_ttl'].min():.0f}–{df['dynamic_ttl'].max():.0f}s")
     print(f"   eviction_score — mean: {df['eviction_score'].mean():.1f}  "
           f"range: {df['eviction_score'].min():.1f}–{df['eviction_score'].max():.1f}")
-    print(f"   cache_reuse — positive rate: {df['cache_reuse'].mean()*100:.1f}%")
+    print(f"   cache_reuse    — positive rate: {df['cache_reuse'].mean()*100:.1f}%")
 
     return df
 
 
-# 4. TRAIN
+# 4. TRAIN 
 FEATURE_COLS = [
     # Context
     "route_type_enc", "page_type_enc", "price_tier_enc", "is_single_item",
@@ -279,13 +254,7 @@ def train(df: pd.DataFrame):
     print("\nTraining models...")
     X = df[FEATURE_COLS].fillna(0)
 
-    # =====================================================================
-    # Model 1: TTL Regressor
-    # Target: ttl_label adjusted by hit-rate and access-count multipliers.
-    # This gives a well-distributed, learnable target (std ~100–150s)
-    # that the model refines using traffic context features.
-    # Expected: MAE ~50–120s, R² 0.70–0.88
-    # =====================================================================
+    # Model 1 — TTL Regressor
     y_ttl = df["dynamic_ttl"]
     Xtr, Xte, ytr, yte = train_test_split(
         X, y_ttl, test_size=0.2, random_state=42, shuffle=True
@@ -313,11 +282,10 @@ def train(df: pd.DataFrame):
     print(f"\n   [1] TTL Regressor")
     print(f"       MAE    : {ttl_mae}s  (naive mean baseline: {naive_mae}s)")
     print(f"       R²     : {ttl_r2}")
-    print(f"       Expected: MAE ~50–120s, R² 0.70–0.88")
+    print(f"       Expected: MAE ~80–160s, R² 0.45–0.70")
 
-    # =====================================================================
-    # Model 2: Eviction Score Regressor — unchanged, already excellent
-    # =====================================================================
+
+    # Model 2 — Eviction Score Regressor
     y_evict = df["eviction_score"]
     Xtr2, Xte2, ytr2, yte2 = train_test_split(
         X, y_evict, test_size=0.2, random_state=42, shuffle=True
@@ -331,16 +299,14 @@ def train(df: pd.DataFrame):
     )
     evict_model.fit(Xtr2, ytr2)
     evict_preds = evict_model.predict(Xte2)
-    evict_mae = round(float(mean_absolute_error(yte2, evict_preds)), 2)
-    evict_r2  = round(float(r2_score(yte2, evict_preds)), 3)
+    evict_mae   = round(float(mean_absolute_error(yte2, evict_preds)), 2)
+    evict_r2    = round(float(r2_score(yte2, evict_preds)), 3)
     print(f"\n   [2] Eviction Score Regressor")
     print(f"       MAE : {evict_mae}")
     print(f"       R²  : {evict_r2}")
     print(f"       Expected: R² 0.6–0.85")
 
-    # =====================================================================
-    # Model 3: Cache-Reuse Classifier — unchanged, already solid
-    # =====================================================================
+    # Model 3 — Cache-Reuse Classifier
     y_reuse = df["cache_reuse"]
     Xtr3, Xte3, ytr3, yte3 = train_test_split(
         X, y_reuse, test_size=0.2, random_state=42, shuffle=True
@@ -360,34 +326,36 @@ def train(df: pd.DataFrame):
     reuse_model.fit(Xtr3, ytr3)
     reuse_preds = reuse_model.predict(Xte3)
     reuse_proba = reuse_model.predict_proba(Xte3)[:, 1]
-    reuse_f1  = round(float(f1_score(yte3, reuse_preds, average="macro", zero_division=0)), 3)
-    reuse_auc = round(float(roc_auc_score(yte3, reuse_proba)), 3)
+    reuse_f1    = round(float(f1_score(yte3, reuse_preds, average="macro", zero_division=0)), 3)
+    reuse_auc   = round(float(roc_auc_score(yte3, reuse_proba)), 3)
     print(f"\n   [3] Cache-Reuse Classifier")
     print(f"       F1 (macro) : {reuse_f1}")
     print(f"       AUC-ROC    : {reuse_auc}")
     print(f"       Expected: F1 0.75–0.85, AUC 0.85–0.95")
 
     metrics = {
-        "ttl_mae":           ttl_mae,
-        "ttl_r2":            ttl_r2,
-        "ttl_naive_mae":     naive_mae,
-        "evict_mae":         evict_mae,
-        "evict_r2":          evict_r2,
-        "reuse_f1":          reuse_f1,
-        "reuse_auc":         reuse_auc,
-        "train_rows":        len(X),
-        "test_rows":         len(Xte),
-        "ttl_target_mean":   round(float(y_ttl.mean()), 1),
-        "ttl_target_std":    round(float(y_ttl.std()), 1),
-        "evict_target_mean": round(float(y_evict.mean()), 1),
-        "evict_target_std":  round(float(y_evict.std()), 1),
+        "ttl_mae":             ttl_mae,
+        "ttl_r2":              ttl_r2,
+        "ttl_naive_mae":       naive_mae,
+        "evict_mae":           evict_mae,
+        "evict_r2":            evict_r2,
+        "reuse_f1":            reuse_f1,
+        "reuse_auc":           reuse_auc,
+        "prefetch_f1":         reuse_f1,
+        "prefetch_auc":        reuse_auc,
+        "train_rows":          len(X),
+        "test_rows":           len(Xte),
+        "ttl_target_mean":     round(float(y_ttl.mean()), 1),
+        "ttl_target_std":      round(float(y_ttl.std()), 1),
+        "evict_target_mean":   round(float(y_evict.mean()), 1),
+        "evict_target_std":    round(float(y_evict.std()), 1),
         "reuse_positive_rate": round(float(y_reuse.mean()), 3),
     }
 
     return ttl_model, evict_model, reuse_model, metrics
 
 
-# 5. SAVE
+# 5. SAVE 
 def save_models(ttl_model, evict_model, reuse_model, df, metrics=None):
     print(f"\nSaving to {MODEL_DIR}/")
     bundle = {
@@ -396,29 +364,32 @@ def save_models(ttl_model, evict_model, reuse_model, df, metrics=None):
         "reuse_model":   reuse_model,
         "feature_cols":  FEATURE_COLS,
         "route_types":   ROUTE_TYPES,
-        "prefetch_cols": [],  # backwards compat
+        "prefetch_cols": [],   # backwards compat
     }
     with open(MODEL_PATH, "wb") as f:
         pickle.dump(bundle, f)
 
-    raw_imp  = ttl_model.feature_importances_
-    max_imp  = float(max(raw_imp)) if max(raw_imp) > 0 else 1.0
+    raw_imp = ttl_model.feature_importances_
+    max_imp = float(max(raw_imp)) if max(raw_imp) > 0 else 1.0
     feat_imp = [
-        {"feature": feat, "importance": round(float(imp), 4),
-         "importance_pct": round(float(imp) / max_imp * 100, 1)}
+        {
+            "feature":        feat,
+            "importance":     round(float(imp), 4),
+            "importance_pct": round(float(imp) / max_imp * 100, 1),
+        }
         for feat, imp in sorted(
             zip(FEATURE_COLS, raw_imp), key=lambda x: x[1], reverse=True
         )
     ]
 
     meta = {
-        "trained_at":       pd.Timestamp.now().isoformat(),
-        "training_rows":    len(df),
-        "feature_cols":     FEATURE_COLS,
-        "route_types":      ROUTE_TYPES,
-        "ttl_bounds":       {"min": TTL_MIN, "max": TTL_MAX},
+        "trained_at":      pd.Timestamp.now().isoformat(),
+        "training_rows":   len(df),
+        "feature_cols":    FEATURE_COLS,
+        "route_types":     ROUTE_TYPES,
+        "ttl_bounds":      {"min": TTL_MIN, "max": TTL_MAX},
         "model_notes": {
-            "ttl":   "regression on ttl_label adjusted by hit-rate & access-count multipliers — well-distributed learnable target; ttl_used excluded to avoid ML feedback loop",
+            "ttl":   "70% route-rolling-median inter-arrival + 30% ttl_label; honest target, no feedback loop",
             "evict": "future access count in 10-min window",
             "reuse": "binary: will key be accessed before TTL expires?",
         },
@@ -428,12 +399,7 @@ def save_models(ttl_model, evict_model, reuse_model, df, metrics=None):
             "new_arrivals": 3, "similar": 4,
         },
         "price_tier_map": {"unknown": 0, "budget": 1, "mid": 2, "premium": 3},
-        "metrics":        {
-            **metrics,
-            # Dashboard compatibility: some frontend versions read these keys
-            "f1_score":  metrics.get("reuse_f1"),
-            "auc_score": metrics.get("reuse_auc"),
-        } if metrics else {},
+        "metrics":        metrics or {},
         "feature_importances": feat_imp,
     }
     with open(META_PATH, "w") as f:
@@ -456,7 +422,7 @@ def print_importance(ttl_model):
         print(f"   {feat:<35} {bar} {imp:.0f}")
 
 
-# MAIN
+# MAIN 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA)
@@ -467,7 +433,7 @@ def main():
         return
 
     print("=" * 55)
-    print("  LightCache — Phase 4: Model Training (v11)")
+    print("  LightCache — Phase 4: Model Training (v12)")
     print("=" * 55)
 
     df = load_data(args.data)
@@ -478,7 +444,7 @@ def main():
     print_importance(ttl_model)
 
     print("\n" + "=" * 55)
-    print("  Training complete — 3 models saved (v11)")
+    print("  Training complete — 3 models saved (v12)")
     print("  Next: python app.py")
     print("=" * 55)
 

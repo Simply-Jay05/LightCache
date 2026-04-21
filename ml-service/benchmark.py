@@ -30,7 +30,7 @@ MISS_LATENCY_MS = 350.0
 
 PEAK_HOURS = {9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}
 
-# Maps must match what train.py used — these are the defaults in app.py
+# Must match train.py exactly
 ROUTE_TYPE_MAP = {
     "products_list": 0, "product_single": 1,
     "best_seller": 2,   "new_arrivals": 3, "similar_products": 4,
@@ -41,17 +41,27 @@ PAGE_TYPE_MAP = {
 }
 PRICE_TIER_MAP = {"unknown": 0, "budget": 1, "mid": 2, "premium": 3}
 
+# Cache-key prefix map — must match train.py
+_PREFIX_MAP = {
+    "products:list":        0,
+    "products:single":      1,
+    "products:similar":     2,
+    "products:best-seller": 3,
+    "products:new-arrivals":4,
+}
 
-# Load real model
+def _cache_key_prefix_enc(cache_key: str) -> int:
+    for k, v in _PREFIX_MAP.items():
+        if str(cache_key).startswith(k):
+            return v
+    return 0
+
+
+# Load real model 
 def load_model():
-    """
-    Load the trained LightGBM model bundle.
-    Returns (ttl_model, evict_model, meta) if successful, else (None, None, {}).
-    """
     if not MODEL_PATH.exists():
         print("  [benchmark] No model file found at:", MODEL_PATH)
-        print("  [benchmark] Using heuristic fallback for ML strategy.")
-        print("  [benchmark] Train the model first for real ML predictions.\n")
+        print("  [benchmark] Using heuristic fallback for ML strategy.\n")
         return None, None, {}
 
     try:
@@ -77,94 +87,95 @@ def load_model():
         return None, None, {}
 
 
-# Feature vector — mirrors app.py build_vector() exactly 
-def build_vector(route_type, page_type, price_tier, hour_of_day, weekday,
-                 is_peak_hour, key_access_count, key_hit_rate,
-                 time_since_last, request_interval_mean, request_interval_std):
-    """
-    Constructs the 17-feature numpy array that the LightGBM model expects.
-    Order must match train.py's feature_cols exactly.
-    """
-    route_enc = ROUTE_TYPE_MAP.get(route_type, 0)
-    page_enc  = PAGE_TYPE_MAP.get(page_type or "collection", 0)
-    tier_enc  = PRICE_TIER_MAP.get(price_tier or "unknown", 0)
-    is_single = 1 if route_type in ("product_single", "best_seller") else 0
+# Feature vector — MUST match app.py build_vector() exactly (23 features)
+def build_vector(route_type, page_type, price_tier, cache_key,
+                 hour_of_day, weekday, is_peak_hour, is_weekend,
+                 key_access_count, key_hit_rate, ttl_label,
+                 time_since_last, request_interval_mean, request_interval_std,
+                 latency_ms):
+    
+    route_enc  = ROUTE_TYPE_MAP.get(route_type, 0)
+    page_enc   = PAGE_TYPE_MAP.get(page_type or "collection", 0)
+    tier_enc   = PRICE_TIER_MAP.get(price_tier or "unknown", 0)
+    is_single  = 1 if route_type in ("product_single", "best_seller") else 0
+    prefix_enc = _cache_key_prefix_enc(cache_key or "")
 
     hour_sin = math.sin(2 * math.pi * hour_of_day / 24)
     hour_cos = math.cos(2 * math.pi * hour_of_day / 24)
     day_sin  = math.sin(2 * math.pi * weekday / 7)
     day_cos  = math.cos(2 * math.pi * weekday / 7)
 
-    past_access = max(1, key_access_count)
-    log_past    = math.log1p(past_access)
+    ttl_label_log     = math.log1p(max(TTL_MIN, min(ttl_label or TTL_MIN, TTL_MAX)))
+    past_access       = max(1, key_access_count)
+    log_past          = math.log1p(past_access)
+    interval_mean_log = math.log1p(request_interval_mean)
+    latency_log       = math.log1p(max(0, latency_ms))
 
     return np.array([[
-        route_enc, page_enc, tier_enc, is_single,
-        hour_of_day, weekday, is_peak_hour,
+        route_enc, page_enc, tier_enc, is_single, prefix_enc,
+        hour_of_day, weekday, is_peak_hour, is_weekend,
         hour_sin, hour_cos, day_sin, day_cos,
-        past_access, log_past, key_hit_rate,
+        ttl_label_log,
+        past_access, log_past, key_hit_rate, key_hit_rate,  # rolling_hit_rate, route_hit_rate
         time_since_last, request_interval_mean, request_interval_std,
+        interval_mean_log,
+        latency_log,
     ]])
 
 
 # ML prediction via real model 
 def ml_predict(record, ttl_model, evict_model,
                ac, hr, since, interval_mean, interval_std):
-    """
-    Call the actual LightGBM models to get TTL and eviction score.
-    Same logic as app.py's run_predict() — just without the FastAPI wrapper.
-    """
     route    = record.get("route_type",  "products_list")
     page     = record.get("page_type",   "collection")
     tier     = record.get("price_tier",  "unknown")
+    key      = record.get("cache_key",   "")
     hour     = int(record.get("hour_of_day", 12))
     weekday  = int(record.get("weekday", 0))
     is_peak  = 1 if hour in PEAK_HOURS else 0
+    is_wknd  = 1 if weekday >= 5 else 0
+    latency  = float(record.get("latency_ms", 0))
+    ttl_lbl  = float(record.get("ttl_label", 0) or 0)
 
     X = build_vector(
-        route, page, tier, hour, weekday, is_peak,
-        ac, hr, since, interval_mean, interval_std
+        route, page, tier, key,
+        hour, weekday, is_peak, is_wknd,
+        ac, hr, ttl_lbl,
+        since, interval_mean, interval_std,
+        latency,
     )
 
-    # TTL prediction
     raw_ttl = float(ttl_model.predict(X)[0])
     ttl     = int(np.clip(round(raw_ttl), TTL_MIN, TTL_MAX))
 
-    # Eviction score prediction (higher = more valuable, keep in cache)
     raw_score = float(evict_model.predict(X)[0])
     score     = float(np.clip(raw_score, 0.0, 200.0))
 
     return ttl, score
 
 
-# Heuristic fallback (when no model exists yet) 
+# Heuristic fallback 
 def heuristic_predict(route, hour, ac, hr, since):
-    """
-    Used ONLY when no trained model exists.
-    Approximates what the model would predict using the same features.
-    NOT used when a real model is available.
-    """
     base_ttls = {
         "products_list": 240, "product_single": 720,
         "best_seller": 180,   "new_arrivals": 120, "similar_products": 480,
     }
-    base     = base_ttls.get(route, 300)
-    freq_m   = min(1.0 + (ac / 40.0) * 0.5, 1.8)
-    pop_m    = 0.7 + (hr * 0.6)
-    peak_m   = 0.82 if hour in PEAK_HOURS else 1.05
-    route_m  = {"new_arrivals": 0.80, "best_seller": 0.90, "products_list": 0.95,
-                "similar_products": 1.10, "product_single": 1.20}.get(route, 1.0)
-    ttl      = max(TTL_MIN, min(int(base * freq_m * pop_m * peak_m * route_m), TTL_MAX))
-    score    = math.log1p(ac) * 30.0 + hr * 50.0 + max(0, 20.0 - since / 60.0)
+    base    = base_ttls.get(route, 300)
+    freq_m  = min(1.0 + (ac / 40.0) * 0.5, 1.8)
+    pop_m   = 0.7 + (hr * 0.6)
+    peak_m  = 0.82 if hour in PEAK_HOURS else 1.05
+    route_m = {"new_arrivals": 0.80, "best_seller": 0.90, "products_list": 0.95,
+               "similar_products": 1.10, "product_single": 1.20}.get(route, 1.0)
+    ttl     = max(TTL_MIN, min(int(base * freq_m * pop_m * peak_m * route_m), TTL_MAX))
+    score   = math.log1p(ac) * 30.0 + hr * 50.0 + max(0, 20.0 - since / 60.0)
     return ttl, score
 
 
 # Cache implementations 
-
 class LRUCache:
     def __init__(self, capacity):
         self.capacity = capacity
-        self.cache    = OrderedDict()   # key → expire_ms
+        self.cache    = OrderedDict()
 
     def get(self, key, now_ms):
         if key not in self.cache:
@@ -233,17 +244,11 @@ class LFUCache:
 
 
 class MLCache:
-    """
-    Uses ML-predicted eviction scores to decide what to drop.
-    Keys with high scores (model thinks they will be accessed soon) survive.
-    Keys with low scores (model thinks they are cold) get evicted first.
-    This is fundamentally different from LRU (recency) and LFU (frequency).
-    """
     def __init__(self, capacity):
         self.capacity = capacity
-        self.cache    = {}   # key → expire_ms
-        self.scores   = {}   # key → eviction_score from model
-        self.access   = {}   # key → last_access_ms (tie-breaker)
+        self.cache    = {}
+        self.scores   = {}
+        self.access   = {}
 
     def get(self, key, now_ms):
         if key not in self.cache:
@@ -260,7 +265,6 @@ class MLCache:
         self.cache[key]  = now_ms + ttl * 1000
         self.scores[key] = score
         self.access[key] = now_ms
-        # Evict the key the model thinks is least worth keeping
         while len(self.cache) > self.capacity:
             victim = min(self.scores, key=lambda k: (self.scores[k], self.access[k]))
             del self.cache[victim]
@@ -273,23 +277,14 @@ class MLCache:
 
 # Simulation engine 
 def simulate(records, cache, strategy, ttl_model=None, evict_model=None):
-    """
-    Replay the request log against a given cache.
-
-    strategy: "lru" | "lfu" | "ml"
-
-    For "ml": calls the real LightGBM models on every miss.
-    For "lru"/"lfu": uses FIXED_TTLS as the baseline.
-    """
     hits = misses = evictions = 0
     by_route  = defaultdict(lambda: {"hits": 0, "misses": 0})
     prev_size = 0
 
-    # Running stats per key (used to build the feature vector)
-    key_ac       = defaultdict(int)      # access count
-    key_hc       = defaultdict(int)      # hit count
-    key_last_ts  = {}                    # last access timestamp
-    key_intervals = defaultdict(list)   # inter-request intervals
+    key_ac        = defaultdict(int)
+    key_hc        = defaultdict(int)
+    key_last_ts   = {}
+    key_intervals = defaultdict(list)
 
     for r in records:
         key   = r.get("cache_key", "")
@@ -300,40 +295,35 @@ def simulate(records, cache, strategy, ttl_model=None, evict_model=None):
         if not key or not ts:
             continue
 
-        # Update per-key stats
-        key_ac[key]  += 1
-        ac             = key_ac[key]
-        hr             = key_hc[key] / ac
+        key_ac[key] += 1
+        ac  = key_ac[key]
+        hr  = key_hc[key] / ac
 
-        last           = key_last_ts.get(key, ts)
-        since          = max(0.0, (ts - last) / 1000.0)  # seconds
+        last  = key_last_ts.get(key, ts)
+        since = max(0.0, (ts - last) / 1000.0)
         key_last_ts[key] = ts
 
         if since > 0:
             key_intervals[key].append(since)
-        recent          = key_intervals[key][-10:]
-        interval_mean   = sum(recent) / len(recent) if recent else 300.0
-        interval_std    = (
+        recent        = key_intervals[key][-10:]
+        interval_mean = sum(recent) / len(recent) if recent else 300.0
+        interval_std  = (
             math.sqrt(sum((x - interval_mean)**2 for x in recent) / len(recent))
             if len(recent) > 1 else 0.0
         )
 
-        # Get TTL and eviction score
         if strategy == "ml":
             if ttl_model is not None and evict_model is not None:
-                # ← REAL MODEL called here
                 ttl, score = ml_predict(
                     r, ttl_model, evict_model,
                     ac, hr, since, interval_mean, interval_std
                 )
             else:
-                # Fallback only when no model file exists
                 ttl, score = heuristic_predict(route, hour, ac, hr, since)
         else:
             ttl   = FIXED_TTLS.get(route, 300)
             score = 50.0
 
-        # Check and update cache
         hit = cache.get(key, ts)
         cur = cache.size()
         if cur < prev_size:
@@ -375,10 +365,6 @@ def simulate(records, cache, strategy, ttl_model=None, evict_model=None):
 
 # TTL waste analysis 
 def ttl_waste_analysis(records, ttl_model, evict_model):
-    """
-    Measures how many cached entries expired uselessly (before being
-    re-accessed) for fixed TTL vs ML dynamic TTL. Lower waste = better.
-    """
     fixed_stats = defaultdict(lambda: {"sets": 0, "useful": 0, "wasted": 0, "ttl_sum": 0})
     ml_stats    = defaultdict(lambda: {"sets": 0, "useful": 0, "wasted": 0, "ttl_sum": 0})
     fixed_cache = {}
@@ -452,11 +438,9 @@ def run_benchmark(data_path=None, output_path=None, capacities=None):
         print(f"  [benchmark] Data not found: {data_path}")
         return None
 
-    # Load the REAL model
     ttl_model, evict_model, meta = load_model()
     using_real_model = ttl_model is not None
 
-    # Load records
     records = []
     with open(data_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -489,7 +473,7 @@ def run_benchmark(data_path=None, output_path=None, capacities=None):
                 records,
                 CacheClass(cap),
                 strategy=strat,
-                ttl_model=ttl_model   if strat == "ml" else None,
+                ttl_model=ttl_model    if strat == "ml" else None,
                 evict_model=evict_model if strat == "ml" else None,
             )
             cap_res[name] = result
@@ -498,17 +482,16 @@ def run_benchmark(data_path=None, output_path=None, capacities=None):
               f"LFU={cap_res['LFU']['hit_rate']:>6}%  "
               f"ML={cap_res['ML (LightCache)']['hit_rate']:>6}%")
 
-    # TTL waste analysis
     fixed_stats, ml_stats = ttl_waste_analysis(records, ttl_model, evict_model)
 
     output = {
-        "generated_at":      time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "total_records":     len(records),
-        "using_real_model":  using_real_model,
-        "model_trained_at":  meta.get("trained_at"),
+        "generated_at":       time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "total_records":      len(records),
+        "using_real_model":   using_real_model,
+        "model_trained_at":   meta.get("trained_at"),
         "model_trained_rows": meta.get("training_rows"),
-        "capacities_tested": capacities,
-        "results":           capacity_results,
+        "capacities_tested":  capacities,
+        "results":            capacity_results,
         "ttl_analysis": {
             route: {
                 "fixed_avg_ttl":   round(fixed_stats[route]["ttl_sum"] / fixed_stats[route]["sets"], 0)
@@ -525,6 +508,10 @@ def run_benchmark(data_path=None, output_path=None, capacities=None):
             for route in set(list(fixed_stats.keys()) + list(ml_stats.keys()))
         },
     }
+
+    # The frontend reads benchmark.capacity_results (not benchmark.results)
+    # Add both keys for full compatibility
+    output["capacity_results"] = capacity_results
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as f:
@@ -550,10 +537,10 @@ if __name__ == "__main__":
         print(f"  {'Cap':>6}  {'LRU':>8}  {'LFU':>8}  {'ML':>8}  {'ML-LRU Δ':>10}  {'ML-LFU Δ':>10}")
         print("  " + "-" * 58)
         for cap in result["capacities_tested"]:
-            row = result["results"][str(cap)]
-            lru = row["LRU"]["hit_rate"]
-            lfu = row["LFU"]["hit_rate"]
-            ml  = row["ML (LightCache)"]["hit_rate"]
+            row  = result["results"][str(cap)]
+            lru  = row["LRU"]["hit_rate"]
+            lfu  = row["LFU"]["hit_rate"]
+            ml   = row["ML (LightCache)"]["hit_rate"]
             dlru = round(ml - lru, 2)
             dlfu = round(ml - lfu, 2)
             print(f"  {cap:>6}  {lru:>7}%  {lfu:>7}%  {ml:>7}%  "
