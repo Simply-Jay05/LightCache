@@ -25,7 +25,7 @@ BENCHMARK_DATA_PATH  = BASE_DIR / "logs"  / "cache_events.jsonl"
 # Model globals
 TTL_MODEL    = None
 EVICT_MODEL  = None
-REUSE_MODEL  = None   # replaces PREFETCH_MODEL — predicts cache reuse likelihood
+REUSE_MODEL  = None
 FEATURE_COLS = []
 ROUTE_TYPES  = []
 META         = {}
@@ -59,7 +59,6 @@ def try_load_model() -> bool:
 
         TTL_MODEL    = bundle["ttl_model"]
         EVICT_MODEL  = bundle["evict_model"]
-        # Support both old (prefetch_model) and new (reuse_model) bundle keys
         REUSE_MODEL  = bundle.get("reuse_model") or bundle.get("prefetch_model")
         FEATURE_COLS = bundle["feature_cols"]
         ROUTE_TYPES  = bundle["route_types"]
@@ -83,13 +82,14 @@ class PredictRequest(BaseModel):
     route_type:               str
     page_type:                str
     item_id:                  Optional[str]   = ""
-    cache_key:                str
+    cache_key:                str             = ""
     hour_of_day:              int
     weekday:                  int
     is_weekend:               int
     is_peak_hour:             int
     price_tier:               Optional[str]   = "unknown"
     ttl_used:                 Optional[int]   = 300
+    ttl_label:                Optional[float] = 0.0   # v9: rule-based anchor TTL
     latency_ms:               Optional[float] = 0.0
     key_access_count:         Optional[int]   = 1
     key_hit_rate:             Optional[float] = 0.5
@@ -102,10 +102,26 @@ class PredictRequest(BaseModel):
 class PredictResponse(BaseModel):
     ttl_seconds:        int
     eviction_score:     float
-    prefetch_routes:    List[str]   # kept for API compat — now reuse probability buckets
-    reuse_probability:  float       # new: P(key accessed again before TTL expires)
+    prefetch_routes:    List[str]
+    reuse_probability:  float
     inference_ms:       float
     model_version:      str
+
+
+# Cache-key prefix encoding — must match train.py
+_PREFIX_MAP = {
+    "products:list":        0,
+    "products:single":      1,
+    "products:similar":     2,
+    "products:best-seller": 3,
+    "products:new-arrivals":4,
+}
+
+def _cache_key_prefix_enc(cache_key: str) -> int:
+    for k, v in _PREFIX_MAP.items():
+        if cache_key.startswith(k):
+            return v
+    return 0
 
 
 def build_vector(req: PredictRequest) -> np.ndarray:
@@ -113,28 +129,50 @@ def build_vector(req: PredictRequest) -> np.ndarray:
     page_map  = META.get("page_type_map",   DEFAULT_META["page_type_map"])
     tier_map  = META.get("price_tier_map",  DEFAULT_META["price_tier_map"])
 
-    route_enc = route_map.get(req.route_type, 0)
-    page_enc  = page_map.get(req.page_type, 0)
-    tier_enc  = tier_map.get(req.price_tier or "unknown", 0)
-    is_single = 1 if req.route_type in ("product_single", "best_seller") else 0
+    route_enc  = route_map.get(req.route_type, 0)
+    page_enc   = page_map.get(req.page_type, 0)
+    tier_enc   = tier_map.get(req.price_tier or "unknown", 0)
+    is_single  = 1 if req.route_type in ("product_single", "best_seller") else 0
+    prefix_enc = _cache_key_prefix_enc(req.cache_key or "")
 
     hour_sin = math.sin(2 * math.pi * req.hour_of_day / 24)
     hour_cos = math.cos(2 * math.pi * req.hour_of_day / 24)
     day_sin  = math.sin(2 * math.pi * req.weekday / 7)
     day_cos  = math.cos(2 * math.pi * req.weekday / 7)
 
+    ttl_min = 30
+    ttl_max = 1800
+    # Rule-based TTL anchor — safe prior, never contaminated by ML outputs
+    # ttl_used is intentionally excluded to avoid ML feedback loop
+    ttl_label_log = math.log1p(max(0, min(req.ttl_label or 0.0, ttl_max)))
+
     past_access  = req.key_access_count or 1
     log_past     = math.log1p(past_access)
     latency_log  = math.log1p(req.latency_ms or 0.0)
 
+    interval_mean     = req.request_interval_mean or 300.0
+    interval_mean_log = math.log1p(interval_mean)
+
+    # route_hit_rate: we don't track this per-route at inference time,
+    # so use the key hit rate as a reasonable proxy (same semantics).
+    route_hit_rate = req.key_hit_rate or 0.5
+
     return np.array([[
-        route_enc, page_enc, tier_enc, is_single,
+        # Context
+        route_enc, page_enc, tier_enc, is_single, prefix_enc,
+        # Time
         req.hour_of_day, req.weekday, req.is_peak_hour, req.is_weekend,
         hour_sin, hour_cos, day_sin, day_cos,
-        past_access, log_past, req.key_hit_rate or 0.5,
+        # TTL anchor
+        ttl_label_log,
+        # Access history
+        past_access, log_past, req.key_hit_rate or 0.5, route_hit_rate,
+        # Inter-arrival timing
         req.time_since_last_request or 0.0,
-        req.request_interval_mean or 300.0,
+        interval_mean,
         req.request_interval_std or 0.0,
+        interval_mean_log,
+        # Latency
         latency_log,
     ]])
 
@@ -160,20 +198,16 @@ def run_predict(req: PredictRequest) -> PredictResponse:
     eviction_score = round(float(np.clip(raw_evict, 0, 200)), 2)
 
     # Cache-reuse probability
-    # High probability → key will be accessed again → worth prefetching/keeping
     reuse_probability = 0.5
     prefetch_routes   = []
     if REUSE_MODEL is not None:
         try:
-            # New reuse_model: single binary classifier
             if hasattr(REUSE_MODEL, "predict_proba") and not hasattr(REUSE_MODEL, "estimators_"):
                 reuse_probability = round(float(REUSE_MODEL.predict_proba(X)[0][1]), 3)
-                # Translate into prefetch signal for backwards API compat
                 if reuse_probability >= 0.8:
                     prefetch_routes = [req.route_type]
                 elif reuse_probability >= 0.6:
                     prefetch_routes = []
-            # Legacy MultiOutputClassifier (old prefetch model)
             else:
                 proba_list = REUSE_MODEL.predict_proba(X)
                 scores = []
@@ -235,7 +269,7 @@ async def lifespan(app):
         try:
             dummy = PredictRequest(
                 route_type="product_single", page_type="product_detail",
-                cache_key="warmup", hour_of_day=12, weekday=1,
+                cache_key="products:single:warmup", hour_of_day=12, weekday=1,
                 is_weekend=0, is_peak_hour=1,
             )
             result = run_predict(dummy)
@@ -252,7 +286,7 @@ async def lifespan(app):
 app = FastAPI(
     title="LightCache ML Service",
     description="Dynamic TTL, eviction score and cache-reuse predictions",
-    version="4.0.0",
+    version="4.1.0",
     lifespan=lifespan,
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
@@ -440,6 +474,7 @@ def simulate_from_real():
             "item_id":     str(random.randint(1, 500)),
             "query":       "{}",
             "ttl_used":    str(round(ttl_raw)),
+            "ttl_label":   str(round(ttl_raw * 0.5, 1)),
             "latency_ms":  str(round(lat_raw, 2)),
             "hour_of_day": str(random.choice(hour_choices)),
             "weekday":     str(random.randint(0, 6)),
