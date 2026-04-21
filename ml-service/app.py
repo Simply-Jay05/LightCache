@@ -132,15 +132,18 @@ def build_vector(req: PredictRequest) -> np.ndarray:
 
     past_access = req.key_access_count or 1
     log_past    = math.log1p(past_access)
+    log_ttl_used = math.log1p(req.ttl_used or 300)
+    latency_log  = math.log1p(req.latency_ms or 0.0)
 
     return np.array([[
         route_enc, page_enc, tier_enc, is_single,
-        req.hour_of_day, req.weekday, req.is_peak_hour,
+        req.hour_of_day, req.weekday, req.is_peak_hour, req.is_weekend,
         hour_sin, hour_cos, day_sin, day_cos,
         past_access, log_past, req.key_hit_rate or 0.5,
         req.time_since_last_request or 0.0,
         req.request_interval_mean or 300.0,
         req.request_interval_std or 0.0,
+        log_ttl_used, latency_log,
     ]])
 
 
