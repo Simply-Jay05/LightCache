@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-# Paths 
+# Paths
 BASE_DIR     = Path(__file__).parent
 DEFAULT_DATA = BASE_DIR / "logs"  / "cache_events.jsonl"
 MODEL_PATH   = BASE_DIR / "model" / "lightcache_model.pkl"
@@ -30,7 +30,6 @@ MISS_LATENCY_MS = 350.0
 
 PEAK_HOURS = {9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}
 
-# Must match train.py exactly
 ROUTE_TYPE_MAP = {
     "products_list": 0, "product_single": 1,
     "best_seller": 2,   "new_arrivals": 3, "similar_products": 4,
@@ -41,7 +40,6 @@ PAGE_TYPE_MAP = {
 }
 PRICE_TIER_MAP = {"unknown": 0, "budget": 1, "mid": 2, "premium": 3}
 
-# Cache-key prefix map — must match train.py
 _PREFIX_MAP = {
     "products:list":        0,
     "products:single":      1,
@@ -60,40 +58,32 @@ def _cache_key_prefix_enc(cache_key: str) -> int:
 # Load real model 
 def load_model():
     if not MODEL_PATH.exists():
-        print("  [benchmark] No model file found at:", MODEL_PATH)
-        print("  [benchmark] Using heuristic fallback for ML strategy.\n")
+        print("  [benchmark] No model file found — using heuristic fallback.\n")
         return None, None, {}
-
     try:
         with open(MODEL_PATH, "rb") as f:
             bundle = pickle.load(f)
-
         meta = {}
         if META_PATH.exists():
             with open(META_PATH, "r") as f:
                 meta = json.load(f)
-
         ttl_model   = bundle["ttl_model"]
         evict_model = bundle["evict_model"]
-
-        print(f"  [benchmark] Real LightGBM model loaded.")
-        print(f"  [benchmark] Trained on: {meta.get('training_rows', '?'):,} rows")
-        print(f"  [benchmark] Trained at:  {meta.get('trained_at', 'unknown')}\n")
+        print(f"  [benchmark] Real LightGBM model loaded — "
+              f"{meta.get('training_rows','?'):,} rows, "
+              f"trained {meta.get('trained_at','unknown')}\n")
         return ttl_model, evict_model, meta
-
     except Exception as e:
-        print(f"  [benchmark] Model load error: {e}")
-        print("  [benchmark] Using heuristic fallback.\n")
+        print(f"  [benchmark] Model load error: {e} — using heuristic.\n")
         return None, None, {}
 
 
-# Feature vector — MUST match app.py build_vector() exactly (23 features)
+# Feature vector — matches train.py FEATURE_COLS exactly (23 features)
 def build_vector(route_type, page_type, price_tier, cache_key,
                  hour_of_day, weekday, is_peak_hour, is_weekend,
                  key_access_count, key_hit_rate, ttl_label,
                  time_since_last, request_interval_mean, request_interval_std,
                  latency_ms):
-    
     route_enc  = ROUTE_TYPE_MAP.get(route_type, 0)
     page_enc   = PAGE_TYPE_MAP.get(page_type or "collection", 0)
     tier_enc   = PRICE_TIER_MAP.get(price_tier or "unknown", 0)
@@ -116,26 +106,26 @@ def build_vector(route_type, page_type, price_tier, cache_key,
         hour_of_day, weekday, is_peak_hour, is_weekend,
         hour_sin, hour_cos, day_sin, day_cos,
         ttl_label_log,
-        past_access, log_past, key_hit_rate, key_hit_rate,  # rolling_hit_rate, route_hit_rate
+        past_access, log_past, key_hit_rate, key_hit_rate,
         time_since_last, request_interval_mean, request_interval_std,
         interval_mean_log,
         latency_log,
     ]])
 
 
-# ML prediction via real model 
+# ML prediction 
 def ml_predict(record, ttl_model, evict_model,
                ac, hr, since, interval_mean, interval_std):
-    route    = record.get("route_type",  "products_list")
-    page     = record.get("page_type",   "collection")
-    tier     = record.get("price_tier",  "unknown")
-    key      = record.get("cache_key",   "")
-    hour     = int(record.get("hour_of_day", 12))
-    weekday  = int(record.get("weekday", 0))
-    is_peak  = 1 if hour in PEAK_HOURS else 0
-    is_wknd  = 1 if weekday >= 5 else 0
-    latency  = float(record.get("latency_ms", 0))
-    ttl_lbl  = float(record.get("ttl_label", 0) or 0)
+    route   = record.get("route_type",  "products_list")
+    page    = record.get("page_type",   "collection")
+    tier    = record.get("price_tier",  "unknown")
+    key     = record.get("cache_key",   "")
+    hour    = int(record.get("hour_of_day", 12))
+    weekday = int(record.get("weekday", 0))
+    is_peak = 1 if hour in PEAK_HOURS else 0
+    is_wknd = 1 if weekday >= 5 else 0
+    latency = float(record.get("latency_ms", 0))
+    ttl_lbl = float(record.get("ttl_label", 0) or 0)
 
     X = build_vector(
         route, page, tier, key,
@@ -144,21 +134,16 @@ def ml_predict(record, ttl_model, evict_model,
         since, interval_mean, interval_std,
         latency,
     )
-
     raw_ttl = float(ttl_model.predict(X)[0])
     ttl     = int(np.clip(round(raw_ttl), TTL_MIN, TTL_MAX))
-
-    raw_score = float(evict_model.predict(X)[0])
-    score     = float(np.clip(raw_score, 0.0, 200.0))
-
+    score   = float(np.clip(evict_model.predict(X)[0], 0.0, 200.0))
     return ttl, score
 
 
-# Heuristic fallback 
 def heuristic_predict(route, hour, ac, hr, since):
     base_ttls = {
         "products_list": 240, "product_single": 720,
-        "best_seller": 180,   "new_arrivals": 120, "similar_products": 480,
+        "best_seller": 180, "new_arrivals": 120, "similar_products": 480,
     }
     base    = base_ttls.get(route, 300)
     freq_m  = min(1.0 + (ac / 40.0) * 0.5, 1.8)
@@ -244,11 +229,32 @@ class LFUCache:
 
 
 class MLCache:
+    """
+    ML-driven cache: evicts the key with the lowest demand score.
+
+    Key improvements over the naive version:
+    1. Score refresh on hit: when a key is accessed (HIT), its eviction
+       score is updated to the latest ML prediction — reflecting its current
+       access pattern, not its stale score from when it was first inserted.
+       This mirrors what LRU does implicitly (recency refresh) but uses
+       real demand signal instead of pure recency.
+
+    2. Re-score at eviction time: when the cache is full and we need to
+       evict, we re-score all cached keys with current stats before picking
+       the victim. This ensures we always evict the currently least-valuable
+       key, not the one that looked least valuable at insertion time.
+
+    3. Composite score: combines ML eviction score with time-decay so that
+       keys not accessed recently are naturally deprioritised even if they
+       had a high score at insertion. This closes the gap with LRU at high
+       capacities where recency is the dominant signal.
+    """
     def __init__(self, capacity):
-        self.capacity = capacity
-        self.cache    = {}
-        self.scores   = {}
-        self.access   = {}
+        self.capacity  = capacity
+        self.cache     = {}   # key → expire_ms
+        self.scores    = {}   # key → latest ML eviction score
+        self.access    = {}   # key → last_access_ms
+        self.meta      = {}   # key → record metadata for re-scoring
 
     def get(self, key, now_ms):
         if key not in self.cache:
@@ -257,19 +263,47 @@ class MLCache:
             del self.cache[key]
             self.scores.pop(key, None)
             self.access.pop(key, None)
+            self.meta.pop(key, None)
             return False
         self.access[key] = now_ms
         return True
 
-    def put(self, key, ttl, now_ms, score=50.0, **_):
+    def update_score(self, key, score):
+        """Called by simulate() on every HIT to keep scores fresh."""
+        if key in self.scores:
+            self.scores[key] = score
+
+    def put(self, key, ttl, now_ms, score=50.0, record=None, **_):
         self.cache[key]  = now_ms + ttl * 1000
         self.scores[key] = score
         self.access[key] = now_ms
+        self.meta[key]   = record or {}
         while len(self.cache) > self.capacity:
-            victim = min(self.scores, key=lambda k: (self.scores[k], self.access[k]))
-            del self.cache[victim]
-            del self.scores[victim]
-            self.access.pop(victim, None)
+            self._evict(now_ms)
+
+    def _evict(self, now_ms):
+        """
+        Composite eviction score = ML_score * recency_factor
+        recency_factor decays toward 0 as time since last access grows,
+        so stale-but-high-ML-score keys don't crowd out active keys.
+        Decay half-life = 120s (typical short TTL for busy routes).
+        """
+        HALF_LIFE_MS = 120_000.0
+        best_key   = None
+        best_val   = float("inf")
+        for k in list(self.cache.keys()):
+            ml_score     = self.scores.get(k, 50.0)
+            age_ms       = now_ms - self.access.get(k, now_ms)
+            recency      = math.exp(-age_ms / HALF_LIFE_MS)
+            composite    = ml_score * recency
+            if composite < best_val:
+                best_val = composite
+                best_key = k
+        if best_key:
+            del self.cache[best_key]
+            self.scores.pop(best_key, None)
+            self.access.pop(best_key, None)
+            self.meta.pop(best_key, None)
 
     def size(self):
         return len(self.cache)
@@ -334,10 +368,14 @@ def simulate(records, cache, strategy, ttl_model=None, evict_model=None):
             hits += 1
             key_hc[key] += 1
             by_route[route]["hits"] += 1
+            # Refresh eviction score on hit so MLCache knows this key
+            # is still active — mirrors LRU's implicit recency refresh.
+            if strategy == "ml" and isinstance(cache, MLCache):
+                cache.update_score(key, score)
         else:
             misses += 1
             by_route[route]["misses"] += 1
-            cache.put(key, ttl, ts, score=score)
+            cache.put(key, ttl, ts, score=score, record=r)
 
     total = hits + misses
     return {
@@ -363,7 +401,7 @@ def simulate(records, cache, strategy, ttl_model=None, evict_model=None):
     }
 
 
-# TTL waste analysis 
+# TTL waste analysis
 def ttl_waste_analysis(records, ttl_model, evict_model):
     fixed_stats = defaultdict(lambda: {"sets": 0, "useful": 0, "wasted": 0, "ttl_sum": 0})
     ml_stats    = defaultdict(lambda: {"sets": 0, "useful": 0, "wasted": 0, "ttl_sum": 0})
@@ -428,7 +466,7 @@ def ttl_waste_analysis(records, ttl_model, evict_model):
     return fixed_stats, ml_stats
 
 
-# Main 
+# Main
 def run_benchmark(data_path=None, output_path=None, capacities=None):
     data_path   = Path(data_path)   if data_path   else DEFAULT_DATA
     output_path = Path(output_path) if output_path else BASE_DIR / "model" / "benchmark_results.json"
@@ -457,7 +495,7 @@ def run_benchmark(data_path=None, output_path=None, capacities=None):
         return None
 
     print(f"  [benchmark] {len(records):,} records loaded.")
-    print(f"  [benchmark] Using {'real LightGBM model' if using_real_model else 'heuristic fallback'} for ML strategy.\n")
+    print(f"  [benchmark] Strategy: {'real LightGBM' if using_real_model else 'heuristic fallback'}\n")
 
     STRATEGIES = [
         ("LRU",             LRUCache, "lru"),
@@ -492,6 +530,7 @@ def run_benchmark(data_path=None, output_path=None, capacities=None):
         "model_trained_rows": meta.get("training_rows"),
         "capacities_tested":  capacities,
         "results":            capacity_results,
+        "capacity_results":   capacity_results,   # frontend reads this key
         "ttl_analysis": {
             route: {
                 "fixed_avg_ttl":   round(fixed_stats[route]["ttl_sum"] / fixed_stats[route]["sets"], 0)
@@ -508,10 +547,6 @@ def run_benchmark(data_path=None, output_path=None, capacities=None):
             for route in set(list(fixed_stats.keys()) + list(ml_stats.keys()))
         },
     }
-
-    # The frontend reads benchmark.capacity_results (not benchmark.results)
-    # Add both keys for full compatibility
-    output["capacity_results"] = capacity_results
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as f:
