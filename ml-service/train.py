@@ -13,7 +13,7 @@ from sklearn.multioutput import MultiOutputClassifier
 
 warnings.filterwarnings("ignore")
 
-# Paths 
+# Paths
 BASE_DIR     = Path(__file__).parent
 MODEL_DIR    = BASE_DIR / "model"
 MODEL_PATH   = MODEL_DIR / "lightcache_model.pkl"
@@ -32,7 +32,6 @@ ROUTE_TYPES = [
     "new_arrivals",
     "similar_products",
 ]
-
 
 
 # 1. LOAD
@@ -59,13 +58,11 @@ def load_data(path: Path) -> pd.DataFrame:
     return df
 
 
-
 # 2. FEATURE ENGINEERING
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     print("\nEngineering features...")
     df = df.copy()
 
-    # Categorical encodings 
     route_map = {r: i for i, r in enumerate(ROUTE_TYPES)}
     page_map  = {
         "collection": 0, "product_detail": 1, "best_seller": 2,
@@ -80,7 +77,6 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         ["product_single", "best_seller"]
     ).astype(int)
 
-    # Time of day features 
     df["hour_of_day"]  = df["hour_of_day"].fillna(0).astype(int).clip(0, 23)
     df["weekday"]      = df["weekday"].fillna(0).astype(int).clip(0, 6)
     df["is_peak_hour"] = df["is_peak_hour"].fillna(0).astype(int)
@@ -89,11 +85,9 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     df["day_sin"]  = np.sin(2 * np.pi * df["weekday"] / 7)
     df["day_cos"]  = np.cos(2 * np.pi * df["weekday"] / 7)
 
-    # Past-only cumulative access count per key
     df["past_access_count"] = df.groupby("cache_key").cumcount() + 1
     df["log_past_count"]    = np.log1p(df["past_access_count"])
 
-    # Rolling hit rate — past 5 requests for this key 
     df["rolling_hit_rate"] = (
         df.groupby("cache_key")["is_hit"]
         .transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
@@ -102,11 +96,11 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
 
     df["prev_request_ts"] = df.groupby("cache_key")["timestamp"].shift(1)
     df["time_since_last_request"] = (
-        (df["timestamp"] - df["prev_request_ts"]) / 1000.0  # ms to seconds
+        (df["timestamp"] - df["prev_request_ts"]) / 1000.0
     ).fillna(0).clip(0, TTL_MAX)
 
     def rolling_interval_mean(group):
-        intervals = group.diff().shift(1)  # past intervals only
+        intervals = group.diff().shift(1)
         return intervals.rolling(10, min_periods=1).mean().fillna(300)
 
     df["request_interval_mean"] = (
@@ -125,17 +119,43 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         .clip(0, TTL_MAX)
     )
 
+    # ── NEW FEATURES: 3 additional TTL-specific signals ───────────────────
+    #
+    # request_interval_min: shortest observed gap for this cache key.
+    # Acts as a lower-bound hint — "this key is sometimes requested fast".
+    def rolling_interval_min(group):
+        intervals = group.diff().shift(1)
+        return intervals.rolling(10, min_periods=1).min().fillna(300)
+
+    df["request_interval_min"] = (
+        df.groupby("cache_key")["timestamp"]
+        .transform(lambda x: rolling_interval_min(x) / 1000.0)
+        .clip(0, TTL_MAX)
+    )
+
+    # interval_cv: coefficient of variation (std / mean).
+    # High CV = erratic access = model should be more conservative on TTL.
+    df["interval_cv"] = (
+        df["request_interval_std"] / (df["request_interval_mean"] + 1e-6)
+    ).clip(0, 10)
+
+    # recent_interval: gap from 2 requests ago to now.
+    # Captures short-term rhythm shifts that a rolling mean misses entirely.
+    df["prev2_request_ts"] = df.groupby("cache_key")["timestamp"].shift(2)
+    df["recent_interval"] = (
+        (df["timestamp"] - df["prev2_request_ts"]) / 1000.0
+    ).fillna(df["request_interval_mean"]).clip(0, TTL_MAX)
+    # ──────────────────────────────────────────────────────────────────────
+
     print(f"   Done: {df.shape[1]} columns, {len(df):,} rows")
     return df
 
 
-
-# 3. BUILD TARGETS (no leakage)
+# 3. BUILD TARGETS  (unchanged)
 def build_targets(df: pd.DataFrame) -> pd.DataFrame:
     print("\nBuilding targets...")
     df = df.copy()
 
-    # Target 1: dynamic_ttl 
     df["next_request_ts"] = df.groupby("cache_key")["timestamp"].shift(-1)
     df["dynamic_ttl"] = (
         (df["next_request_ts"] - df["timestamp"]) / 1000.0
@@ -147,7 +167,6 @@ def build_targets(df: pd.DataFrame) -> pd.DataFrame:
         .clip(TTL_MIN, TTL_MAX)
     )
 
-    # Target 2: eviction_score 
     WINDOW_MS = 10 * 60 * 1000
 
     def future_access_count(group):
@@ -169,7 +188,6 @@ def build_targets(df: pd.DataFrame) -> pd.DataFrame:
         (df["future_access_count"] / max_count * 200).clip(0, 200)
     )
 
-    # Target 3: prefetch labels
     df["next_route"] = df.groupby("cache_key")["route_type"].shift(-1)
     for rt in ROUTE_TYPES:
         df[f"prefetch_{rt}"] = (df["next_route"] == rt).astype(int)
@@ -183,30 +201,19 @@ def build_targets(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-
 # 4. TRAIN
 FEATURE_COLS = [
-    # Context features
-    "route_type_enc",
-    "page_type_enc",
-    "price_tier_enc",
-    "is_single_item",
+    # Context
+    "route_type_enc", "page_type_enc", "price_tier_enc", "is_single_item",
     # Time of day
-    "hour_of_day",
-    "weekday",
-    "is_peak_hour",
-    "hour_sin",
-    "hour_cos",
-    "day_sin",
-    "day_cos",
-    # Access history (past only, no leakage)
-    "past_access_count",
-    "log_past_count",
-    "rolling_hit_rate",
-    # Temporal inter-arrival features (the TTL fix)
-    "time_since_last_request",
-    "request_interval_mean",
-    "request_interval_std",
+    "hour_of_day", "weekday", "is_peak_hour",
+    "hour_sin", "hour_cos", "day_sin", "day_cos",
+    # Access history
+    "past_access_count", "log_past_count", "rolling_hit_rate",
+    # Inter-arrival (original)
+    "time_since_last_request", "request_interval_mean", "request_interval_std",
+    # Inter-arrival (new)
+    "request_interval_min", "interval_cv", "recent_interval",
 ]
 
 
@@ -214,60 +221,76 @@ def train(df: pd.DataFrame):
     print("\nTraining models...")
     X = df[FEATURE_COLS].fillna(0)
 
-    # =========================================================
-    # Model 1: Dynamic TTL  — IMPROVED
-    # =========================================================
-    # Root cause of poor MAE: TTL distribution is right-skewed
-    # (mean=586s, std=754s).  Training directly on raw seconds
-    # causes the model to chase large outliers.
+    # ── TTL distribution diagnostic ───────────────────────────────────────
+    ttl = df["dynamic_ttl"]
+    p10, p25, p50, p75, p90, p95 = np.percentile(ttl, [10, 25, 50, 75, 90, 95])
+    pct_capped = (ttl == TTL_MAX).mean() * 100
+    print(f"\n   TTL distribution: p10={p10:.0f}  p25={p25:.0f}  p50={p50:.0f}"
+          f"  p75={p75:.0f}  p90={p90:.0f}  p95={p95:.0f}")
+    print(f"   {pct_capped:.1f}% of rows capped at TTL_MAX ({TTL_MAX}s)")
+    # ──────────────────────────────────────────────────────────────────────
+
+    # =====================================================================
+    # Model 1: Dynamic TTL  — v5 strategy
     #
-    # Fix: log1p-transform the target so the model learns in a
-    # compressed, more uniform space, then invert with expm1()
-    # at prediction time.  Also tuned hyperparameters for a
-    # wider, deeper ensemble with early stopping.
-    # =========================================================
+    # Problem diagnosis:
+    #   std=754s means the target is *very* wide and likely bimodal —
+    #   short-lived keys (TTL~30–300s) and long-lived keys (TTL~1800s).
+    #   Log-transform optimises well for small values but hurts R² on the
+    #   original scale.  L2 loss chases outliers.
+    #
+    # Fix:
+    #   A. Huber loss — quadratic for typical errors, linear for outliers.
+    #      Native-scale predictions, better R² than log-transform.
+    #   B. 95th-pct clip on training targets — removes the wall of TTL_MAX
+    #      rows that are "never seen again" (censored, not real signal).
+    #   C. 3 new inter-arrival features (min, cv, recent) give the model
+    #      richer access-pattern signal without any data leakage.
+    #   D. 1000 trees + lr=0.01 + early stopping for best generalisation.
+    # =====================================================================
     y_ttl = df["dynamic_ttl"]
     Xtr, Xte, ytr, yte = train_test_split(
         X, y_ttl, test_size=0.2, random_state=42, shuffle=True
     )
 
-    # Log-transform: compress the wide TTL range into a tighter space
-    ytr_log = np.log1p(ytr)
-    yte_log = np.log1p(yte)
+    # B: clip training targets at 95th pct (test set stays untouched)
+    ttl_cap = float(np.percentile(ytr, 95))
+    print(f"   95th-pct training cap: {ttl_cap:.0f}s")
+    ytr_clipped = ytr.clip(upper=ttl_cap)
 
     ttl_model = LGBMRegressor(
-        n_estimators=800,        # more trees to capture TTL variance
-        learning_rate=0.02,      # lower lr pairs well with more trees
-        max_depth=7,             # slightly deeper for complex TTL patterns
-        num_leaves=50,           # wider leaves for better expressiveness
-        min_child_samples=15,    # slightly lower to capture rarer patterns
+        objective="huber",       # A: robust to large TTL outliers
+        alpha=0.9,               # huber slope crossover at 90th pct
+        n_estimators=1000,       # D: large ensemble
+        learning_rate=0.01,      # D: slow + many trees
+        max_depth=6,
+        num_leaves=40,
+        min_child_samples=20,
         subsample=0.8,
-        subsample_freq=1,        # enable row subsampling every iteration
-        colsample_bytree=0.8,
-        reg_alpha=0.05,          # lighter L1 (log-space needs less shrinkage)
-        reg_lambda=0.2,          # moderate L2
-        n_iter_no_change=50,     # early stopping patience
+        subsample_freq=1,
+        colsample_bytree=0.75,
+        reg_alpha=0.1,
+        reg_lambda=0.2,
+        n_iter_no_change=60,     # D: early stopping
         random_state=42,
         verbose=-1,
     )
     ttl_model.fit(
-        Xtr, ytr_log,
-        eval_set=[(Xte, yte_log)],  # enables early stopping
+        Xtr, ytr_clipped,
+        eval_set=[(Xte, yte)],
     )
 
-    # Predict in log-space → invert back to seconds for reporting
-    ttl_preds_log = ttl_model.predict(Xte)
-    ttl_preds     = np.expm1(ttl_preds_log).clip(TTL_MIN, TTL_MAX)
-    ttl_mae = round(float(mean_absolute_error(yte, ttl_preds)), 2)
-    ttl_r2  = round(float(r2_score(yte, ttl_preds)), 3)
+    ttl_preds = ttl_model.predict(Xte).clip(TTL_MIN, TTL_MAX)
+    ttl_mae   = round(float(mean_absolute_error(yte, ttl_preds)), 2)
+    ttl_r2    = round(float(r2_score(yte, ttl_preds)), 3)
     print(f"\n   [1] TTL Regressor")
     print(f"       MAE : {ttl_mae}s")
     print(f"       R2  : {ttl_r2}")
     print(f"       (Expected: R2 0.3–0.6)")
 
-    # =========================================================
-    # Model 2: Eviction Score  — UNCHANGED (already excellent)
-    # =========================================================
+    # =====================================================================
+    # Model 2: Eviction Score  — UNCHANGED (R²=0.986)
+    # =====================================================================
     y_evict = df["eviction_score"]
     Xtr2, Xte2, ytr2, yte2 = train_test_split(
         X, y_evict, test_size=0.2, random_state=42, shuffle=True
@@ -287,9 +310,9 @@ def train(df: pd.DataFrame):
     print(f"       R2  : {evict_r2}")
     print(f"       (Expected: R2 0.4–0.75)")
 
-    # =========================================================
-    # Model 3: Prefetch Classifier  — UNCHANGED (already excellent)
-    # =========================================================
+    # =====================================================================
+    # Model 3: Prefetch Classifier  — UNCHANGED (F1=1.0)
+    # =====================================================================
     prefetch_mask = df["next_route"].notna()
     X_pref = X[prefetch_mask]
     prefetch_cols = [f"prefetch_{rt}" for rt in ROUTE_TYPES]
@@ -328,8 +351,7 @@ def train(df: pd.DataFrame):
     return ttl_model, evict_model, prefetch_model, metrics
 
 
-
-# 5. SAVE  — UNCHANGED
+# 5. SAVE  (unchanged)
 def save_models(ttl_model, evict_model, prefetch_model, df, metrics=None):
     print(f"\nSaving to {MODEL_DIR}/")
     bundle = {
@@ -343,9 +365,9 @@ def save_models(ttl_model, evict_model, prefetch_model, df, metrics=None):
     with open(MODEL_PATH, "wb") as f:
         pickle.dump(bundle, f)
 
-    raw_imp   = ttl_model.feature_importances_
-    max_imp   = float(max(raw_imp)) if max(raw_imp) > 0 else 1.0
-    feat_imp  = [
+    raw_imp  = ttl_model.feature_importances_
+    max_imp  = float(max(raw_imp)) if max(raw_imp) > 0 else 1.0
+    feat_imp = [
         {"feature": feat, "importance": round(float(imp), 4),
          "importance_pct": round(float(imp) / max_imp * 100, 1)}
         for feat, imp in sorted(
@@ -375,8 +397,7 @@ def save_models(ttl_model, evict_model, prefetch_model, df, metrics=None):
     print(f"   Meta saved  : {META_PATH.name}")
 
 
-
-# 6. FEATURE IMPORTANCE  — UNCHANGED
+# 6. FEATURE IMPORTANCE  (unchanged)
 def print_importance(ttl_model):
     print("\nTop features — TTL model:")
     pairs = sorted(
@@ -387,7 +408,6 @@ def print_importance(ttl_model):
     for feat, imp in pairs[:10]:
         bar = "█" * int(imp / max_imp * 20)
         print(f"   {feat:<30} {bar} {imp:.0f}")
-
 
 
 # MAIN
@@ -401,7 +421,7 @@ def main():
         return
 
     print("=" * 55)
-    print("  LightCache — Phase 4: Model Training (v4)")
+    print("  LightCache — Phase 4: Model Training (v5)")
     print("=" * 55)
 
     df = load_data(args.data)
