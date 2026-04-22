@@ -5,6 +5,7 @@
 const express = require("express");
 const router = express.Router();
 const { protect, admin } = require("../middleware/authMiddleware");
+const { smartEvict } = require("../middleware/cacheMiddleware");
 
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || "http://localhost:8000";
 
@@ -20,8 +21,6 @@ router.get("/retrain-history", protect, admin, async (req, res) => {
 });
 
 // GET /api/ml/model-metrics
-// Returns full model metadata: all 3 model metrics + feature importances.
-// Sourced from model_meta.json written by train.py on every training run.
 router.get("/model-metrics", protect, admin, async (req, res) => {
   try {
     const response = await fetch(`${ML_SERVICE_URL}/admin/model-metrics`);
@@ -48,15 +47,13 @@ router.get("/health", protect, admin, async (req, res) => {
 });
 
 // POST /api/ml/simulate-from-real
-// Asks ml-service to generate synthetic training rows modelled on real
-// captured data, augmenting the JSONL until MIN_ROWS_TO_RETRAIN is met.
 router.post("/simulate-from-real", protect, admin, async (req, res) => {
   try {
     const response = await fetch(`${ML_SERVICE_URL}/admin/simulate-from-real`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body || {}),
-      signal: AbortSignal.timeout(60000), // simulation can take a moment
+      signal: AbortSignal.timeout(60000),
     });
     if (!response.ok) {
       const text = await response.text();
@@ -70,12 +67,11 @@ router.post("/simulate-from-real", protect, admin, async (req, res) => {
 });
 
 // POST /api/ml/trigger-retrain
-// Tells the retrain scheduler to run immediately (ignores time interval).
 router.post("/trigger-retrain", protect, admin, async (req, res) => {
   try {
     const response = await fetch(`${ML_SERVICE_URL}/admin/trigger-retrain`, {
       method: "POST",
-      signal: AbortSignal.timeout(180000), // retraining takes up to 3 min
+      signal: AbortSignal.timeout(180000),
     });
     if (!response.ok) {
       const text = await response.text();
@@ -85,6 +81,23 @@ router.post("/trigger-retrain", protect, admin, async (req, res) => {
     res.json(data);
   } catch (err) {
     res.status(503).json({ message: `ML service unavailable: ${err.message}` });
+  }
+});
+
+// POST /api/ml/smart-evict
+// Triggers an immediate ML-driven eviction pass.
+// Useful when you want to trim the cache proactively (e.g. low-memory alert).
+// Body: { targetCount: number } — evict until this many keys remain tracked.
+router.post("/smart-evict", protect, admin, async (req, res) => {
+  try {
+    const targetCount = parseInt(req.body?.targetCount ?? 0, 10);
+    await smartEvict(targetCount);
+    res.json({
+      status: "ok",
+      message: `Smart eviction complete (target: ${targetCount} keys)`,
+    });
+  } catch (err) {
+    res.status(500).json({ message: `Eviction failed: ${err.message}` });
   }
 });
 

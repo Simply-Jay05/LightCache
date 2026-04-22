@@ -24,8 +24,6 @@ const MIN_TTLS = {
   similar_products: 180,
 };
 
-// Maps each route type to the Redis key prefix used by buildCacheKey.
-// Used to scan keyStats for real item IDs that belong to a given route.
 const ROUTE_KEY_PREFIX = {
   products_list: "products:list:",
   product_single: "products:single:",
@@ -34,58 +32,137 @@ const ROUTE_KEY_PREFIX = {
   similar_products: "products:similar:",
 };
 
-// Routes whose cache key encodes a specific item ID (prefix + id).
-// These are the only ones where we can extract and prefetch individual products.
 const ITEM_ID_ROUTES = new Set(["product_single", "similar_products"]);
-
-// Routes with a single, fixed cache key — just warm that one key directly.
 const SINGLETON_ROUTES = new Set(["best_seller", "new_arrivals"]);
 
-//  The backend resolves route-type strings returned by the ML model into actual cache keys by scanning the in-memory keyStats
-//  map, which already tracks access counts for every key seen this session.
-//  For item-scoped routes (product_single, similar_products): Finds the top-N most-accessed keys matching the route's key prefix, extracts the item ID from each key, and returns { cacheKey, itemId }.
-//  For singleton routes (best_seller, new_arrivals): Returns the single fixed cache key with no item ID needed.
-//  For list routes (products_list): Returns the top-N most-accessed list keys (each encodes a query string).
+const ML_SERVICE_URL = process.env.ML_SERVICE_URL || "http://localhost:8000";
 
+// ML-driven eviction tracking
+// In-memory map: cacheKey → { evictionScore, ttlSeconds, lastAccessMs }
+// Updated on every MISS (insertion) and HIT (score refresh).
+// Used by smartEvict() to pick the best candidate to drop from Redis.
+const evictionMeta = new Map();
+
+// Called on cache MISS: registers a new key with its ML eviction metadata.
+
+const registerForEviction = (cacheKey, evictionScore, ttlSeconds) => {
+  evictionMeta.set(cacheKey, {
+    evictionScore,
+    ttlSeconds,
+    lastAccessMs: Date.now(),
+  });
+};
+
+/**
+ * Called on cache HIT: refreshes last access time AND eviction score.
+ * This mirrors what LRU does implicitly (recency refresh) but backed
+ * by the ML demand signal.
+ */
+const refreshEvictionMeta = (cacheKey, newScore) => {
+  const existing = evictionMeta.get(cacheKey);
+  if (existing) {
+    existing.lastAccessMs = Date.now();
+    existing.evictionScore = newScore ?? existing.evictionScore;
+  }
+};
+
+/**
+ * Composite eviction score — same formula as benchmark.py _evict():
+ *   ML_score × recency_decay × ttl_remaining_ratio
+ *
+ * Lower score = better eviction candidate.
+ * Computed locally (no HTTP call) for speed.
+ */
+const compositeEvictionScore = (meta, nowMs) => {
+  const { evictionScore, ttlSeconds, lastAccessMs } = meta;
+  const halfLifeMs = Math.max(30_000, ttlSeconds * 1000 * 0.4);
+  const ageMs = Math.max(0, nowMs - lastAccessMs);
+  const recency = Math.exp(-ageMs / halfLifeMs);
+  const expireMs = lastAccessMs + ttlSeconds * 1000;
+  const ttlRemMs = Math.max(0, expireMs - nowMs);
+  const ttlRemRatio = ttlRemMs / Math.max(ttlSeconds * 1000, 1);
+  return evictionScore * recency * (0.3 + 0.7 * ttlRemRatio);
+};
+
+/**
+ * ML-driven eviction: scans evictionMeta, calls Redis to verify the key
+ * still exists, then deletes the one with the lowest composite score.
+ *
+ * Call this proactively when you want to trim the cache — e.g. if you
+ * track a soft cap on cached keys and want to enforce it.
+ *
+ * @param {number} targetCount - evict until evictionMeta.size <= targetCount
+ */
+const smartEvict = async (targetCount = 0) => {
+  const client = getClient();
+  if (!client || evictionMeta.size === 0) return;
+
+  const nowMs = Date.now();
+
+  // Score all tracked keys
+  const scored = [];
+  for (const [key, meta] of evictionMeta.entries()) {
+    scored.push({ key, score: compositeEvictionScore(meta, nowMs) });
+  }
+
+  // Sort ascending — lowest score = best eviction candidate
+  scored.sort((a, b) => a.score - b.score);
+
+  let evicted = 0;
+  for (const { key } of scored) {
+    if (evictionMeta.size <= targetCount) break;
+    try {
+      // Verify key still exists in Redis before evicting
+      const exists = await client.exists(key);
+      if (exists) {
+        await client.del(key);
+        await client.del(`meta:${key}`);
+        console.log(
+          `🗑️  SMART EVICT [ML] ${key} (score: ${scored.find((s) => s.key === key)?.score?.toFixed(2)})`,
+        );
+      }
+      evictionMeta.delete(key);
+      evicted++;
+    } catch (err) {
+      console.warn(`Smart evict failed for ${key}: ${err.message}`);
+    }
+  }
+
+  if (evicted > 0) {
+    console.log(`🗑️  SMART EVICT complete — removed ${evicted} keys`);
+  }
+};
+
+// Prefetch helpers
 const resolveTopCandidates = (routeType, n = 3) => {
   const prefix = ROUTE_KEY_PREFIX[routeType];
   if (!prefix) return [];
 
-  // Singleton routes have exactly one key — return it directly
   if (SINGLETON_ROUTES.has(routeType)) {
     return [{ cacheKey: prefix, itemId: null }];
   }
 
-  // Scan keyStats for all keys that belong to this route type
   const candidates = [];
   for (const [key, stats] of keyStats.entries()) {
     if (key.startsWith(prefix)) {
       const itemId = ITEM_ID_ROUTES.has(routeType)
-        ? key.slice(prefix.length) // e.g. "products:single:abc123" → "abc123"
+        ? key.slice(prefix.length)
         : null;
       candidates.push({ cacheKey: key, itemId, total: stats.total });
     }
   }
 
-  // Sort by access count descending, take top N
   return candidates
     .sort((a, b) => b.total - a.total)
     .slice(0, n)
     .map(({ cacheKey, itemId }) => ({ cacheKey, itemId }));
 };
 
-// For each resolved candidate:
-//   1. Skip if already in Redis (still warm — nothing to do).
-//   2. Fetch the real data from MongoDB based on route type + item ID.
-//   3. Store in Redis with the ML-provided TTL.
-
 const warmPrefetchCandidates = async (candidates, routeType, ttl) => {
-  // Lazy-load Product to avoid circular deps at module load time
   const Product = require("../models/Product");
 
   for (const { cacheKey, itemId } of candidates) {
     try {
-      // Skip if already cached — no point warming a warm key
       const existing = await cacheGet(cacheKey);
       if (existing !== null) {
         console.log(
@@ -125,7 +202,6 @@ const warmPrefetchCandidates = async (candidates, routeType, ttl) => {
           break;
 
         case "products_list": {
-          // Cache key encodes the query string — parse it back to run the same query
           const prefix = ROUTE_KEY_PREFIX.products_list;
           const qs = cacheKey.slice(prefix.length);
           const params = Object.fromEntries(new URLSearchParams(qs));
@@ -153,7 +229,6 @@ const warmPrefetchCandidates = async (candidates, routeType, ttl) => {
         console.log(`⚡ PREFETCH WARM [${routeType}] ${cacheKey} TTL:${ttl}s`);
       }
     } catch (err) {
-      // Non-critical — prefetch failure must never affect the main response
       console.warn(
         `⚡ PREFETCH FAIL [${routeType}] ${cacheKey}: ${err.message}`,
       );
@@ -161,6 +236,7 @@ const warmPrefetchCandidates = async (candidates, routeType, ttl) => {
   }
 };
 
+// Key helpers
 const buildCacheKey = (req, type) => {
   const queryString = new URLSearchParams(req.query).toString();
   const paramId = req.params.id || "";
@@ -196,19 +272,19 @@ const getPriceTier = (req) => {
   return "premium";
 };
 
-// Store ML metadata alongside the cached entry so HITs know if ML was used
-const setKeyMeta = async (cacheKey, ttl, mlUsed, rawTtl) => {
+// Meta storage in Redis (for HIT recovery of ML metadata)
+const setKeyMeta = async (cacheKey, ttl, mlUsed, rawTtl, evictionScore) => {
   const client = getClient();
   if (!client) return;
   try {
-    const metaKey = `meta:${cacheKey}`;
     await client.setEx(
-      metaKey,
+      `meta:${cacheKey}`,
       ttl,
       JSON.stringify({
         ml_used: mlUsed,
         ttl_used: ttl,
         raw_ml_ttl: rawTtl,
+        eviction_score: evictionScore,
       }),
     );
   } catch {
@@ -227,6 +303,7 @@ const getKeyMeta = async (cacheKey) => {
   }
 };
 
+// Main middleware
 const cacheMiddleware = (type) => {
   return async (req, res, next) => {
     const cacheKey = buildCacheKey(req, type);
@@ -243,10 +320,47 @@ const cacheMiddleware = (type) => {
       const latency = Date.now() - startTime;
       updateKeyStats(cacheKey, true);
 
-      // Look up whether this key was originally cached with ML
       const meta = await getKeyMeta(cacheKey);
       const mlUsed = meta?.ml_used ?? false;
       const ttlUsed = meta?.ttl_used ?? fallbackTtl;
+
+      // Score refresh on HIT
+      // Re-score the key so that evictionMeta reflects current access patterns.
+      // Without this, a key accessed 50 times still has its stale insertion score.
+      // This is the same mechanism that gives LRU its recency advantage — we
+      // replicate it while also updating the ML demand estimate.
+      if (mlUsed) {
+        // Get a fresh prediction with updated hit stats for this key
+        const stats = keyStats.get(cacheKey);
+        const accessCnt = stats?.total ?? 1;
+        const hitCnt = stats?.hits ?? 0;
+        const hitRate = accessCnt > 0 ? hitCnt / accessCnt : 0.5;
+
+        getPrediction({
+          route_type: type,
+          page_type: pageType,
+          item_id: req.params.id || "",
+          cache_key: cacheKey,
+          ttl_used: ttlUsed,
+          latency_ms: latency,
+          is_hit: true,
+          price_tier: priceTier,
+          key_access_count: accessCnt,
+          key_hit_rate: hitRate,
+        })
+          .then((freshPred) => {
+            if (freshPred?.eviction_score != null) {
+              refreshEvictionMeta(cacheKey, freshPred.eviction_score);
+            } else {
+              // No fresh prediction — at least refresh the access timestamp
+              refreshEvictionMeta(cacheKey, null);
+            }
+          })
+          .catch(() => {
+            // Non-critical — never block the HIT response
+            refreshEvictionMeta(cacheKey, null);
+          });
+      }
 
       await logCacheEvent({
         event_type: "HIT",
@@ -280,6 +394,11 @@ const cacheMiddleware = (type) => {
       let evictScore = null;
       let rawMlTtl = null;
 
+      const stats = keyStats.get(cacheKey);
+      const accessCnt = stats?.total ?? 1;
+      const hitCnt = stats?.hits ?? 0;
+      const hitRate = accessCnt > 0 ? hitCnt / accessCnt : 0.5;
+
       const prediction = await getPrediction({
         route_type: type,
         page_type: pageType,
@@ -289,18 +408,25 @@ const cacheMiddleware = (type) => {
         latency_ms: latency,
         is_hit: false,
         price_tier: priceTier,
+        key_access_count: accessCnt,
+        key_hit_rate: hitRate,
       });
 
-      if (prediction && prediction.ttl_seconds) {
+      if (prediction?.ttl_seconds) {
         rawMlTtl = prediction.ttl_seconds;
         ttl = Math.max(prediction.ttl_seconds, minTtl);
-        evictScore = prediction.eviction_score;
+        evictScore = prediction.eviction_score ?? 50;
         mlUsed = true;
       }
 
-      // Store data and metadata
+      // Store data + metadata in Redis
       await cacheSet(cacheKey, data, ttl);
-      await setKeyMeta(cacheKey, ttl, mlUsed, rawMlTtl);
+      await setKeyMeta(cacheKey, ttl, mlUsed, rawMlTtl, evictScore);
+
+      // Register in evictionMeta for ML-driven eviction decisions
+      if (mlUsed && evictScore !== null) {
+        registerForEviction(cacheKey, evictScore, ttl);
+      }
 
       await logCacheEvent({
         event_type: "MISS",
@@ -326,13 +452,10 @@ const cacheMiddleware = (type) => {
         `🔴 CACHE MISS [${type}] ${cacheKey} (${latency}ms) → TTL ${ttlSource}`,
       );
 
-      // PREFETCH
-      // Only run when ML is active and returned prefetch candidates.
-      // Resolves route-type labels → actual product cache keys using keyStats, then warms them from MongoDB after the response has already been sent.
+      // Prefetch
       if (mlUsed && prediction.prefetch_routes?.length > 0) {
-        const prefetchTtl = ttl; // use same ML-derived TTL for prefetched entries
+        const prefetchTtl = ttl;
         setImmediate(() => {
-          // Build and flatten candidate lists for all recommended route types
           const allCandidates = prediction.prefetch_routes.flatMap(
             (routeType) =>
               resolveTopCandidates(routeType, 3).map((c) => ({
@@ -340,13 +463,11 @@ const cacheMiddleware = (type) => {
                 routeType,
               })),
           );
-
           if (allCandidates.length > 0) {
             console.log(
               `⚡ PREFETCH START [${type}] → warming ${allCandidates.length} keys ` +
                 `(routes: ${prediction.prefetch_routes.join(", ")})`,
             );
-            // Group by routeType and warm each group — non-blocking
             const byRoute = allCandidates.reduce((acc, c) => {
               (acc[c.routeType] = acc[c.routeType] || []).push(c);
               return acc;
@@ -367,4 +488,4 @@ const cacheMiddleware = (type) => {
   };
 };
 
-module.exports = { cacheMiddleware, buildCacheKey, DEFAULT_TTLS };
+module.exports = { cacheMiddleware, buildCacheKey, DEFAULT_TTLS, smartEvict };
