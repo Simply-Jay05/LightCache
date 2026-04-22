@@ -185,7 +185,7 @@ def heuristic_predict(route, hour, ac, hr, since, interval_mean):
     return ttl, score
 
 
-# Cache implementations 
+# Cache implementations
 
 class LRUCache:
     def __init__(self, capacity):
@@ -281,10 +281,6 @@ class MLCache:
        and under-caching (premature eviction before reuse).
     """
 
-    # Approximate total unique keys seen in a typical session.
-    # Used to derive capacity_ratio. Updated live from seen_keys.
-    _TYPICAL_UNIQUE = TYPICAL_UNIQUE_KEYS
-
     def __init__(self, capacity):
         self.capacity  = capacity
         self.cache     = {}   # key → [expire_ms, score, last_access_ms, ttl_s, hit_count]
@@ -295,20 +291,21 @@ class MLCache:
         """
         Return (ml_w, recency_w, freq_w) that sum to 1.0.
 
-        Capacity-adaptive weights (tuned parameters):
-          cap_ratio ~0.07 (1MB): ml_w=0.80, recency_w=0.14 — trust ML heavily
-          cap_ratio ~0.60 (8MB): ml_w=0.43, recency_w=0.48 — lean toward LRU
-        This lets LightCache dominate at low capacity and stay competitive
-        with LRU at high capacity.
+        Uses DYNAMIC unique key count — no hardcoded constant — so weights
+        are correctly calibrated whether the dataset has 267 or 800+ keys.
+        Falls back to self.capacity during cold-start.
+
+          cap_ratio ~0.07 (1MB / large key set): ml_w=0.80 — trust ML heavily
+          cap_ratio ~0.60 (8MB / small key set): ml_w=0.43 — lean toward LRU
         """
-        unique_est  = max(len(self.seen_keys), self._TYPICAL_UNIQUE)
+        unique_est  = max(len(self.seen_keys), self.capacity)
         cap_ratio   = min(self.capacity / unique_est, 1.0)
         ml_w        = max(0.38, 0.80 - cap_ratio * 0.62)   # 0.80 → 0.38
         recency_w   = min(0.52, 0.10 + cap_ratio * 0.62)   # 0.10 → 0.52
         freq_w      = max(0.0, 1.0 - ml_w - recency_w)
         return ml_w, recency_w, freq_w
 
-    # TTL helper 
+    # ── TTL helper ───────────────────────────────────────────────────────────
     @staticmethod
     def _smart_ttl(base_ttl, interval_mean, cap_ratio):
         """
@@ -348,7 +345,7 @@ class MLCache:
     def put(self, key, ttl, now_ms, score=50.0, record=None,
             interval_mean=300.0, **_):
         self.seen_keys.add(key)
-        unique_est = max(len(self.seen_keys), self._TYPICAL_UNIQUE)
+        unique_est = max(len(self.seen_keys), self.capacity)
         cap_ratio  = min(self.capacity / unique_est, 1.0)
         smart_ttl  = self._smart_ttl(ttl, interval_mean, cap_ratio)
 
