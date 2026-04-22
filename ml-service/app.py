@@ -556,6 +556,73 @@ def model_metrics():
     }
 
 
+
+
+class EvictScoreRequest(BaseModel):
+    cache_key:          str
+    eviction_score:     float         # ML eviction score from /predict
+    ttl_seconds:        int           # ML-assigned TTL for this key
+    last_access_ms:     float         # epoch ms of last access (from backend)
+    now_ms:             float         # current epoch ms (from backend)
+
+
+class EvictScoreResponse(BaseModel):
+    composite_score:    float   # lower = better eviction candidate
+    should_evict:       bool    # True if composite_score < threshold (50.0)
+    reasoning:          str
+
+
+@app.post("/evict-score", response_model=EvictScoreResponse)
+def evict_score(req: EvictScoreRequest):
+    """
+    Returns a composite eviction priority score for a cached key.
+
+    Your backend calls this when the cache is full and needs to decide
+    which key to drop. The key with the LOWEST composite_score should
+    be evicted first.
+
+    Formula: ML_score * recency_decay * ttl_remaining_ratio
+      - recency_decay: exp(-age / (0.4 * ttl_ms)) — adaptive to key TTL
+      - ttl_remaining_ratio: prefer evicting long-lived low-demand keys
+        over keys about to expire on their own anyway
+
+    This is the same formula used in the benchmark simulation and
+    gives the ML system its edge over LRU and LFU.
+    """
+    import math as _math
+
+    ml_score     = max(0.0, min(req.eviction_score, 200.0))
+    original_ttl = max(30, req.ttl_seconds)
+    now_ms       = req.now_ms
+    expire_ms    = req.last_access_ms + original_ttl * 1000  # approximate
+
+    # Adaptive half-life: 40% of the key's own TTL
+    half_life_ms  = max(30_000.0, original_ttl * 1000 * 0.40)
+    age_ms        = max(0.0, now_ms - req.last_access_ms)
+    recency       = _math.exp(-age_ms / half_life_ms)
+
+    # TTL remaining ratio
+    ttl_rem_ms    = max(0.0, expire_ms - now_ms)
+    ttl_rem_ratio = ttl_rem_ms / max(original_ttl * 1000, 1.0)
+
+    composite = ml_score * recency * (0.3 + 0.7 * ttl_rem_ratio)
+    composite = round(composite, 4)
+
+    if ml_score < 1.0:
+        reasoning = "near-zero demand score — strong eviction candidate"
+    elif recency < 0.1:
+        reasoning = "not accessed recently relative to its TTL — good eviction candidate"
+    elif ttl_rem_ratio > 0.8:
+        reasoning = "long TTL remaining with moderate demand — consider evicting"
+    else:
+        reasoning = "active key — keep in cache"
+
+    return EvictScoreResponse(
+        composite_score=composite,
+        should_evict=composite < 50.0,
+        reasoning=reasoning,
+    )
+
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=8000,
                 reload=False, log_level="info")

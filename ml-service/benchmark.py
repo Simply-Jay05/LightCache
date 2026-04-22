@@ -55,7 +55,7 @@ def _cache_key_prefix_enc(cache_key: str) -> int:
     return 0
 
 
-# Load real model 
+# Load real model
 def load_model():
     if not MODEL_PATH.exists():
         print("  [benchmark] No model file found — using heuristic fallback.\n")
@@ -78,7 +78,7 @@ def load_model():
         return None, None, {}
 
 
-# Feature vector — matches train.py FEATURE_COLS exactly (23 features)
+# Feature vector
 def build_vector(route_type, page_type, price_tier, cache_key,
                  hour_of_day, weekday, is_peak_hour, is_weekend,
                  key_access_count, key_hit_rate, ttl_label,
@@ -156,7 +156,7 @@ def heuristic_predict(route, hour, ac, hr, since):
     return ttl, score
 
 
-# Cache implementations 
+# Cache implementations
 class LRUCache:
     def __init__(self, capacity):
         self.capacity = capacity
@@ -254,7 +254,7 @@ class MLCache:
         self.cache     = {}   # key → expire_ms
         self.scores    = {}   # key → latest ML eviction score
         self.access    = {}   # key → last_access_ms
-        self.meta      = {}   # key → record metadata for re-scoring
+        self.ttls      = {}   # key -> assigned ttl_seconds (for adaptive decay)
 
     def get(self, key, now_ms):
         if key not in self.cache:
@@ -263,7 +263,7 @@ class MLCache:
             del self.cache[key]
             self.scores.pop(key, None)
             self.access.pop(key, None)
-            self.meta.pop(key, None)
+            self.ttls.pop(key, None)
             return False
         self.access[key] = now_ms
         return True
@@ -277,25 +277,34 @@ class MLCache:
         self.cache[key]  = now_ms + ttl * 1000
         self.scores[key] = score
         self.access[key] = now_ms
-        self.meta[key]   = record or {}
+        self.ttls[key]   = ttl
         while len(self.cache) > self.capacity:
             self._evict(now_ms)
 
     def _evict(self, now_ms):
         """
-        Composite eviction score = ML_score * recency_factor
-        recency_factor decays toward 0 as time since last access grows,
-        so stale-but-high-ML-score keys don't crowd out active keys.
-        Decay half-life = 120s (typical short TTL for busy routes).
+        Composite priority = ML_score * recency_decay * ttl_remaining_ratio
+
+        Three signals combined:
+          1. ML eviction score (0-200): model demand prediction.
+          2. Recency decay: exp(-age / half_life) where half_life is
+             proportional to the key own TTL. Short-TTL keys decay
+             faster; long-TTL keys get more slack.
+          3. TTL remaining ratio: prefer evicting long-lived low-demand
+             keys over keys about to expire on their own anyway.
         """
-        HALF_LIFE_MS = 120_000.0
-        best_key   = None
-        best_val   = float("inf")
+        best_key = None
+        best_val = float("inf")
         for k in list(self.cache.keys()):
-            ml_score     = self.scores.get(k, 50.0)
-            age_ms       = now_ms - self.access.get(k, now_ms)
-            recency      = math.exp(-age_ms / HALF_LIFE_MS)
-            composite    = ml_score * recency
+            ml_score        = self.scores.get(k, 50.0)
+            original_ttl    = self.ttls.get(k, 300)
+            expire_ms       = self.cache[k]
+            half_life_ms    = max(30_000.0, original_ttl * 1000 * 0.40)
+            age_ms          = now_ms - self.access.get(k, now_ms)
+            recency         = math.exp(-age_ms / half_life_ms)
+            ttl_rem_ms      = max(0.0, expire_ms - now_ms)
+            ttl_rem_ratio   = ttl_rem_ms / max(original_ttl * 1000, 1.0)
+            composite       = ml_score * recency * (0.3 + 0.7 * ttl_rem_ratio)
             if composite < best_val:
                 best_val = composite
                 best_key = k
@@ -303,13 +312,13 @@ class MLCache:
             del self.cache[best_key]
             self.scores.pop(best_key, None)
             self.access.pop(best_key, None)
-            self.meta.pop(best_key, None)
+            self.ttls.pop(best_key, None)
 
     def size(self):
         return len(self.cache)
 
 
-# Simulation engine 
+# Simulation engine
 def simulate(records, cache, strategy, ttl_model=None, evict_model=None):
     hits = misses = evictions = 0
     by_route  = defaultdict(lambda: {"hits": 0, "misses": 0})
@@ -401,7 +410,7 @@ def simulate(records, cache, strategy, ttl_model=None, evict_model=None):
     }
 
 
-# TTL waste analysis
+# TTL waste analysis 
 def ttl_waste_analysis(records, ttl_model, evict_model):
     fixed_stats = defaultdict(lambda: {"sets": 0, "useful": 0, "wasted": 0, "ttl_sum": 0})
     ml_stats    = defaultdict(lambda: {"sets": 0, "useful": 0, "wasted": 0, "ttl_sum": 0})
@@ -466,7 +475,7 @@ def ttl_waste_analysis(records, ttl_model, evict_model):
     return fixed_stats, ml_stats
 
 
-# Main
+# Main 
 def run_benchmark(data_path=None, output_path=None, capacities=None):
     data_path   = Path(data_path)   if data_path   else DEFAULT_DATA
     output_path = Path(output_path) if output_path else BASE_DIR / "model" / "benchmark_results.json"
