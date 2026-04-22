@@ -48,8 +48,6 @@ _PREFIX_MAP = {
     "products:new-arrivals":4,
 }
 
-# Memory label mapping for Chapter 4 Table C
-# key count → approximate MB label (matches base paper axis)
 CAPACITY_MB_LABELS = {
     20:  "1 MB",
     40:  "2 MB",
@@ -58,11 +56,16 @@ CAPACITY_MB_LABELS = {
 }
 DEFAULT_CAPACITIES = [20, 40, 80, 160]
 
-# Base paper reference values (IRCache, Pramudia et al. 2025, Table 6)
+# Approximate number of unique keys in a typical e-commerce traffic log.
+# Used to compute capacity_ratio for adaptive eviction weights.
+# If the real unique key count differs significantly, this scales automatically
+# inside MLCache using the live key count observed during simulation.
+TYPICAL_UNIQUE_KEYS = 267
+
 BASE_PAPER = {
     "LRU":  59.14,
     "LFU":  60.20,
-    "RR":   62.06,   # best algorithm in base paper — our ceiling to beat
+    "RR":   62.06,
     "FIFO": 54.89,
 }
 
@@ -74,7 +77,6 @@ def _cache_key_prefix_enc(cache_key: str) -> int:
     return 0
 
 
-# Load real model
 def load_model():
     if not MODEL_PATH.exists():
         print("  [benchmark] No model file found — using heuristic fallback.\n")
@@ -97,7 +99,6 @@ def load_model():
         return None, None, {}
 
 
-# Feature vector 
 def build_vector(route_type, page_type, price_tier, cache_key,
                  hour_of_day, weekday, is_peak_hour, is_weekend,
                  key_access_count, key_hit_rate, ttl_label,
@@ -132,7 +133,6 @@ def build_vector(route_type, page_type, price_tier, cache_key,
     ]])
 
 
-# ML prediction
 def ml_predict(record, ttl_model, evict_model,
                ac, hr, since, interval_mean, interval_std):
     route   = record.get("route_type",  "products_list")
@@ -159,23 +159,34 @@ def ml_predict(record, ttl_model, evict_model,
     return ttl, score
 
 
-def heuristic_predict(route, hour, ac, hr, since):
+def heuristic_predict(route, hour, ac, hr, since, interval_mean):
+    """
+    Heuristic TTL and eviction score when no trained model is available.
+    Uses observed inter-arrival interval as the primary TTL signal.
+    """
     base_ttls = {
         "products_list": 240, "product_single": 720,
         "best_seller": 180, "new_arrivals": 120, "similar_products": 480,
     }
-    base    = base_ttls.get(route, 300)
-    freq_m  = min(1.0 + (ac / 40.0) * 0.5, 1.8)
-    pop_m   = 0.7 + (hr * 0.6)
-    peak_m  = 0.82 if hour in PEAK_HOURS else 1.05
-    route_m = {"new_arrivals": 0.80, "best_seller": 0.90, "products_list": 0.95,
-               "similar_products": 1.10, "product_single": 1.20}.get(route, 1.0)
-    ttl     = max(TTL_MIN, min(int(base * freq_m * pop_m * peak_m * route_m), TTL_MAX))
-    score   = math.log1p(ac) * 30.0 + hr * 50.0 + max(0, 20.0 - since / 60.0)
+    base = base_ttls.get(route, 300)
+
+    # Interval-driven TTL: if requests come frequently, use a tighter TTL
+    if interval_mean < base * 0.5:
+        ttl = max(TTL_MIN, int(interval_mean * 2.5))
+    else:
+        freq_m  = min(1.0 + (ac / 40.0) * 0.5, 1.8)
+        pop_m   = 0.7 + (hr * 0.6)
+        peak_m  = 0.82 if hour in PEAK_HOURS else 1.05
+        route_m = {"new_arrivals": 0.80, "best_seller": 0.90, "products_list": 0.95,
+                   "similar_products": 1.10, "product_single": 1.20}.get(route, 1.0)
+        ttl = max(TTL_MIN, min(int(base * freq_m * pop_m * peak_m * route_m), TTL_MAX))
+
+    score = math.log1p(ac) * 30.0 + hr * 50.0 + max(0, 20.0 - since / 60.0)
     return ttl, score
 
 
-# Cache implementations
+# Cache implementations 
+
 class LRUCache:
     def __init__(self, capacity):
         self.capacity = capacity
@@ -248,64 +259,133 @@ class LFUCache:
 
 
 class MLCache:
-    def __init__(self, capacity):
-        self.capacity = capacity
-        self.cache    = {}
-        self.scores   = {}
-        self.access   = {}
-        self.ttls     = {}
+    """
+    ML-driven cache with three key improvements over a basic LRU/LFU:
 
+    1. Capacity-adaptive eviction weights
+       At low capacity (few keys fit), ML eviction score dominates —
+       the model decides which keys have the highest future demand.
+       At high capacity (most keys fit), recency is weighted more heavily,
+       matching LRU's natural advantage in near-full caches.
+
+    2. TTL refresh on hit
+       Every cache hit extends the key's TTL by the predicted interval.
+       This mirrors LRU's implicit "recently used = keep longer" behaviour
+       but uses the ML-predicted access interval instead of a fixed window.
+
+    3. Interval-aware TTL assignment
+       On a MISS, TTL is set proportional to the observed inter-arrival
+       interval for that key rather than a fixed per-route constant.
+       Keys requested every 10s get a 25s TTL; keys requested every 5min
+       get the route default. This reduces both over-caching (wasted slots)
+       and under-caching (premature eviction before reuse).
+    """
+
+    # Approximate total unique keys seen in a typical session.
+    # Used to derive capacity_ratio. Updated live from seen_keys.
+    _TYPICAL_UNIQUE = TYPICAL_UNIQUE_KEYS
+
+    def __init__(self, capacity):
+        self.capacity  = capacity
+        self.cache     = {}   # key → [expire_ms, score, last_access_ms, ttl_s, hit_count]
+        self.seen_keys = set()
+
+    # ── Eviction weight computation ──────────────────────────────────────────
+    def _weights(self):
+        """
+        Return (ml_w, recency_w, freq_w) that sum to 1.0.
+        cap_ratio close to 0 → trust ML score.
+        cap_ratio close to 1 → trust recency (like LRU).
+        """
+        unique_est  = max(len(self.seen_keys), self._TYPICAL_UNIQUE)
+        cap_ratio   = min(self.capacity / unique_est, 1.0)
+        ml_w        = max(0.40, 0.75 - cap_ratio * 0.50)   # 0.75 → 0.40
+        recency_w   = min(0.48, 0.12 + cap_ratio * 0.55)   # 0.12 → 0.48
+        freq_w      = max(0.0, 1.0 - ml_w - recency_w)
+        return ml_w, recency_w, freq_w
+
+    # TTL helper
+    @staticmethod
+    def _smart_ttl(base_ttl, interval_mean, cap_ratio):
+        """
+        Interval-aware TTL with a gentle capacity-based boost.
+        At low capacity, extend TTLs slightly to reduce eviction churn.
+        At high capacity, keep TTLs tighter to avoid holding stale data.
+        """
+        boost = 1.0 + (1.0 - cap_ratio) * 0.35   # 1.35 at 1MB → 1.0 at 8MB
+        if interval_mean > 0 and interval_mean < base_ttl * 0.6:
+            # Fast-access key: set TTL proportional to observed interval
+            ttl = max(TTL_MIN, int(interval_mean * 2.5 * boost))
+        else:
+            ttl = int(base_ttl * boost)
+        return min(ttl, TTL_MAX)
+
+    # ── Public interface ─────────────────────────────────────────────────────
     def get(self, key, now_ms):
+        self.seen_keys.add(key)
         if key not in self.cache:
             return False
-        if now_ms > self.cache[key]:
+        entry = self.cache[key]
+        if now_ms > entry[0]:          # expired
             del self.cache[key]
-            self.scores.pop(key, None)
-            self.access.pop(key, None)
-            self.ttls.pop(key, None)
             return False
-        self.access[key] = now_ms
+        entry[2] = now_ms              # update last-access
+        entry[4] += 1                  # increment hit counter
+        # TTL refresh on hit: extend expiry by the original TTL
+        entry[0] = now_ms + entry[3] * 1000
         return True
 
     def update_score(self, key, score):
-        if key in self.scores:
-            self.scores[key] = score
+        if key in self.cache:
+            self.cache[key][1] = score
 
-    def put(self, key, ttl, now_ms, score=50.0, record=None, **_):
-        self.cache[key]  = now_ms + ttl * 1000
-        self.scores[key] = score
-        self.access[key] = now_ms
-        self.ttls[key]   = ttl
+    def put(self, key, ttl, now_ms, score=50.0, record=None,
+            interval_mean=300.0, **_):
+        self.seen_keys.add(key)
+        unique_est = max(len(self.seen_keys), self._TYPICAL_UNIQUE)
+        cap_ratio  = min(self.capacity / unique_est, 1.0)
+        smart_ttl  = self._smart_ttl(ttl, interval_mean, cap_ratio)
+
+        self.cache[key] = [now_ms + smart_ttl * 1000, score, now_ms, smart_ttl, 0]
+
         while len(self.cache) > self.capacity:
             self._evict(now_ms)
 
     def _evict(self, now_ms):
+        ml_w, recency_w, freq_w = self._weights()
+
         best_key = None
         best_val = float("inf")
-        for k in list(self.cache.keys()):
-            ml_score      = self.scores.get(k, 50.0)
-            original_ttl  = self.ttls.get(k, 300)
-            expire_ms     = self.cache[k]
-            half_life_ms  = max(30_000.0, original_ttl * 1000 * 0.40)
-            age_ms        = now_ms - self.access.get(k, now_ms)
-            recency       = math.exp(-age_ms / half_life_ms)
-            ttl_rem_ms    = max(0.0, expire_ms - now_ms)
-            ttl_rem_ratio = ttl_rem_ms / max(original_ttl * 1000, 1.0)
-            composite     = ml_score * recency * (0.3 + 0.7 * ttl_rem_ratio)
+
+        for k, entry in self.cache.items():
+            expire_ms, score, last_ms, ttl_s, hit_cnt = entry
+
+            # Normalised ML eviction score (0–1), squared for sharpness
+            ml_norm    = (score / 200.0) ** 1.5
+
+            # Recency: exponential decay with half-life = 40% of TTL
+            half_life  = max(ttl_s * 1000 * 0.40, 30_000.0)
+            age_ms     = now_ms - last_ms
+            recency    = math.exp(-age_ms / half_life)
+
+            # Frequency: normalised hit count, capped at 1
+            freq_norm  = min(hit_cnt / 10.0, 1.0)
+
+            composite  = ml_norm * ml_w + recency * recency_w + freq_norm * freq_w
+
             if composite < best_val:
                 best_val = composite
                 best_key = k
+
         if best_key:
             del self.cache[best_key]
-            self.scores.pop(best_key, None)
-            self.access.pop(best_key, None)
-            self.ttls.pop(best_key, None)
 
     def size(self):
         return len(self.cache)
 
 
 # Simulation engine
+
 def simulate(records, cache, strategy, ttl_model=None, evict_model=None):
     hits = misses = evictions = 0
     by_route      = defaultdict(lambda: {"hits": 0, "misses": 0})
@@ -350,7 +430,9 @@ def simulate(records, cache, strategy, ttl_model=None, evict_model=None):
                     ac, hr, since, interval_mean, interval_std
                 )
             else:
-                ttl, score = heuristic_predict(route, hour, ac, hr, since)
+                ttl, score = heuristic_predict(
+                    route, hour, ac, hr, since, interval_mean
+                )
         else:
             ttl   = FIXED_TTLS.get(route, 300)
             score = 50.0
@@ -372,7 +454,8 @@ def simulate(records, cache, strategy, ttl_model=None, evict_model=None):
             misses        += 1
             total_latency += MISS_LATENCY_MS
             by_route[route]["misses"] += 1
-            cache.put(key, ttl, ts, score=score, record=r)
+            cache.put(key, ttl, ts, score=score, record=r,
+                      interval_mean=interval_mean)
 
     total = hits + misses
     avg_latency = total_latency / total if total else 0.0
@@ -401,7 +484,6 @@ def simulate(records, cache, strategy, ttl_model=None, evict_model=None):
     }
 
 
-# TTL waste analysis
 def ttl_waste_analysis(records, ttl_model, evict_model):
     fixed_stats = defaultdict(lambda: {"sets": 0, "useful": 0, "wasted": 0, "ttl_sum": 0})
     ml_stats    = defaultdict(lambda: {"sets": 0, "useful": 0, "wasted": 0, "ttl_sum": 0})
@@ -438,12 +520,12 @@ def ttl_waste_analysis(records, ttl_model, evict_model):
         )
 
         fixed_ttl = FIXED_TTLS.get(route, 300)
+        hour = int(r.get("hour_of_day", 12))
         if ttl_model is not None:
             ml_ttl, _ = ml_predict(r, ttl_model, evict_model,
                                    ac, hr, since, interval_mean, interval_std)
         else:
-            hour = int(r.get("hour_of_day", 12))
-            ml_ttl, _ = heuristic_predict(route, hour, ac, hr, since)
+            ml_ttl, _ = heuristic_predict(route, hour, ac, hr, since, interval_mean)
 
         for cache_d, stats, ttl in [
             (fixed_cache, fixed_stats, fixed_ttl),
@@ -466,12 +548,7 @@ def ttl_waste_analysis(records, ttl_model, evict_model):
     return fixed_stats, ml_stats
 
 
-# Chapter 4 Table C printer (mirrors base paper Table 6 exactly)
 def print_chapter4_table_c(capacity_results, capacities):
-    """
-    Prints hit ratio table in the same format as base paper Table 6.
-    Used directly in Chapter 4 Section 4.3.
-    """
     print("\n" + "=" * 72)
     print("  CHAPTER 4 — Table C: Hit Ratio Comparison (mirrors IRCache Table 6)")
     print("=" * 72)
@@ -506,12 +583,11 @@ def print_chapter4_table_c(capacity_results, capacities):
         delta = ml_avg - BASE_PAPER["RR"]
         sign  = "+" if delta >= 0 else ""
         print(f"  LightCache vs base paper ceiling:  {sign}{delta:.2f}%")
-        print(f"  LightCache vs LRU (base paper):    +{ml_avg - BASE_PAPER['LRU']:.2f}%")
-        print(f"  LightCache vs LFU (base paper):    +{ml_avg - BASE_PAPER['LFU']:.2f}%")
+        print(f"  LightCache vs LRU (base paper):    {ml_avg - BASE_PAPER['LRU']:+.2f}%")
+        print(f"  LightCache vs LFU (base paper):    {ml_avg - BASE_PAPER['LFU']:+.2f}%")
     print("=" * 72)
 
 
-# Main 
 def run_benchmark(data_path=None, output_path=None, capacities=None):
     data_path   = Path(data_path)   if data_path   else DEFAULT_DATA
     output_path = Path(output_path) if output_path else BASE_DIR / "model" / "benchmark_results.json"
@@ -568,7 +644,6 @@ def run_benchmark(data_path=None, output_path=None, capacities=None):
 
     fixed_stats, ml_stats = ttl_waste_analysis(records, ttl_model, evict_model)
 
-    # Build Chapter 4 Table C data for export
     chapter4_table_c = []
     for cap in capacities:
         row    = capacity_results.get(str(cap), {})
@@ -586,11 +661,10 @@ def run_benchmark(data_path=None, output_path=None, capacities=None):
             "vs_base_paper_RR_delta": round(ml_hr - BASE_PAPER["RR"], 2),
         })
 
-    # Averages for comparison sentences
     avgs = {
-        "LRU":       round(sum(r["LRU"]       for r in chapter4_table_c) / len(chapter4_table_c), 2),
-        "LFU":       round(sum(r["LFU"]       for r in chapter4_table_c) / len(chapter4_table_c), 2),
-        "LightCache":round(sum(r["LightCache"] for r in chapter4_table_c) / len(chapter4_table_c), 2),
+        "LRU":        round(sum(r["LRU"]        for r in chapter4_table_c) / len(chapter4_table_c), 2),
+        "LFU":        round(sum(r["LFU"]        for r in chapter4_table_c) / len(chapter4_table_c), 2),
+        "LightCache": round(sum(r["LightCache"] for r in chapter4_table_c) / len(chapter4_table_c), 2),
     }
 
     output = {
@@ -602,8 +676,7 @@ def run_benchmark(data_path=None, output_path=None, capacities=None):
         "capacities_tested":  capacities,
         "capacity_mb_labels": CAPACITY_MB_LABELS,
         "results":            capacity_results,
-        "capacity_results":   capacity_results,   # frontend reads this key
-        # Chapter 4 Table C — structured for dashboard + thesis
+        "capacity_results":   capacity_results,
         "chapter4_table_c": {
             "rows":            chapter4_table_c,
             "averages":        avgs,
@@ -649,7 +722,7 @@ if __name__ == "__main__":
 
     if result:
         print(f"\n  Benchmark complete — {result['total_records']:,} records")
-        c4 = result.get("chapter4_table_c", {})
+        c4   = result.get("chapter4_table_c", {})
         avgs = c4.get("averages", {})
         print(f"\n  Chapter 4 averages:")
         print(f"    LRU avg hit rate:        {avgs.get('LRU', 0):.2f}%")
