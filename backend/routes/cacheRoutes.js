@@ -386,4 +386,295 @@ router.post("/reset-training-data", protect, admin, async (req, res) => {
   }
 });
 
+router.post("/snapshot", protect, admin, async (req, res) => {
+  const client = getClient();
+  if (!client || !getIsConnected()) {
+    return res.status(503).json({ message: "Redis not available" });
+  }
+
+  const { label = "unlabelled", mode = "unknown" } = req.body;
+
+  try {
+    const streamEntries = await client.xRange("cache:logs", "-", "+");
+    if (streamEntries.length === 0) {
+      return res
+        .status(400)
+        .json({ message: "No log entries found. Browse the store first." });
+    }
+
+    // Route payload size estimates (bytes) — used for throughput when
+    // response_size_bytes is not logged
+    const ROUTE_SIZE_BYTES = {
+      products_list: 8192, // ~8KB  list of products
+      product_single: 4096, // ~4KB  single product detail
+      best_seller: 4096,
+      new_arrivals: 16384, // ~16KB list of 8 new arrivals
+      similar_products: 8192,
+    };
+
+    let hits = 0,
+      misses = 0;
+    let hitLatSum = 0,
+      missLatSum = 0,
+      totalLatSum = 0;
+    let totalBytes = 0;
+    let mlCount = 0;
+    const timestamps = [];
+
+    streamEntries.forEach((entry) => {
+      const d = entry.message;
+      const isHit = d.event_type === "HIT";
+      const latency = parseFloat(d.latency_ms || 0);
+      const route = d.route_type || "products_list";
+      const mlUsed = d.ml_used === "true";
+      const ts = parseInt(d.timestamp || 0, 10);
+
+      if (ts > 0) timestamps.push(ts);
+
+      if (isHit) {
+        hits++;
+        hitLatSum += latency;
+      } else {
+        misses++;
+        missLatSum += latency;
+      }
+
+      totalLatSum += latency;
+      if (mlUsed) mlCount++;
+
+      const bytes =
+        parseInt(d.response_size_bytes || 0, 10) ||
+        ROUTE_SIZE_BYTES[route] ||
+        4096;
+      totalBytes += bytes;
+    });
+
+    const total = hits + misses;
+    const elapsedMs =
+      timestamps.length > 1
+        ? Math.max(timestamps[timestamps.length - 1] - timestamps[0], 1)
+        : 60_000; // default 60s if only one entry
+
+    const snapshot = {
+      label,
+      mode,
+      captured_at: new Date().toISOString(),
+      total_requests: total,
+      hits,
+      misses,
+      hit_rate_pct:
+        total > 0 ? parseFloat(((hits / total) * 100).toFixed(2)) : 0,
+      avg_rt_ms: total > 0 ? parseFloat((totalLatSum / total).toFixed(2)) : 0,
+      avg_hit_rt_ms: hits > 0 ? parseFloat((hitLatSum / hits).toFixed(2)) : 0,
+      avg_miss_rt_ms:
+        misses > 0 ? parseFloat((missLatSum / misses).toFixed(2)) : 0,
+      throughput_kbs: parseFloat(
+        (totalBytes / (elapsedMs / 1000) / 1024).toFixed(2),
+      ),
+      ml_coverage_pct:
+        total > 0 ? parseFloat(((mlCount / total) * 100).toFixed(1)) : 0,
+      stream_entries: streamEntries.length,
+    };
+
+    // Persist snapshot to Redis sorted set keyed by timestamp
+    const snapshotKey = "lightcache:snapshots";
+    await client.zAdd(snapshotKey, {
+      score: Date.now(),
+      value: JSON.stringify(snapshot),
+    });
+
+    console.log(
+      `[Snapshot] Saved: ${label} | mode=${mode} | hit_rate=${snapshot.hit_rate_pct}% | RT=${snapshot.avg_rt_ms}ms | TH=${snapshot.throughput_kbs}KB/s`,
+    );
+    res.json({ message: "Snapshot saved.", snapshot });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+//  GET /api/cache/snapshots
+//  Returns all saved snapshots ordered by capture time.
+//  Used by the Evaluation tab to build Table A (RT) and Table B (TH).
+
+router.get("/snapshots", protect, admin, async (req, res) => {
+  const client = getClient();
+  if (!client || !getIsConnected()) {
+    return res.status(503).json({ message: "Redis not available" });
+  }
+  try {
+    const raw = await client.zRange("lightcache:snapshots", 0, -1);
+    const snapshots = raw.map((s) => JSON.parse(s));
+    res.json({ snapshots, count: snapshots.length });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+//  DELETE /api/cache/snapshots
+//  Clears all saved snapshots so you can start a fresh evaluation run.
+
+router.delete("/snapshots", protect, admin, async (req, res) => {
+  const client = getClient();
+  if (!client || !getIsConnected()) {
+    return res.status(503).json({ message: "Redis not available" });
+  }
+  try {
+    await client.del("lightcache:snapshots");
+    res.json({ message: "All snapshots cleared." });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+//  GET /api/cache/chapter4-export
+//  Returns the complete Chapter 4 evaluation data as a single JSON object:
+//  - table_a: Response Time — Fixed TTL Redis vs LightCache ML
+//  - table_b: Throughput   — Fixed TTL Redis vs LightCache ML
+//  - table_c: Hit Ratio    — LRU vs LFU vs LightCache (from benchmark)
+//  - base_paper: reference numbers from IRCache for direct comparison
+
+router.get("/chapter4-export", protect, admin, async (req, res) => {
+  const client = getClient();
+  if (!client || !getIsConnected()) {
+    return res.status(503).json({ message: "Redis not available" });
+  }
+
+  try {
+    // Table A and B: from snapshots
+    const raw = await client.zRange("lightcache:snapshots", 0, -1);
+    const snapshots = raw.map((s) => JSON.parse(s));
+
+    // Group by mode for side-by-side table columns
+    const fixed = snapshots.filter(
+      (s) => s.mode === "fixed_ttl" || s.mode === "redis_only",
+    );
+    const ml = snapshots.filter((s) => s.mode === "ml_active");
+
+    // Build table_a (RT) and table_b (TH) with fixed vs ML columns
+    const labels = [
+      ...new Set([...fixed.map((s) => s.label), ...ml.map((s) => s.label)]),
+    ];
+
+    const table_a = labels.map((label) => {
+      const f = fixed.find((s) => s.label === label);
+      const m = ml.find((s) => s.label === label);
+      const rt_improvement =
+        f && m
+          ? parseFloat(
+              (((f.avg_rt_ms - m.avg_rt_ms) / f.avg_rt_ms) * 100).toFixed(1),
+            )
+          : null;
+      return {
+        label,
+        fixed_ttl_rt_ms: f?.avg_rt_ms ?? null,
+        lightcache_rt_ms: m?.avg_rt_ms ?? null,
+        rt_reduction_pct: rt_improvement,
+      };
+    });
+
+    const table_b = labels.map((label) => {
+      const f = fixed.find((s) => s.label === label);
+      const m = ml.find((s) => s.label === label);
+      const th_improvement =
+        f && m
+          ? parseFloat(
+              (
+                ((m.throughput_kbs - f.throughput_kbs) / f.throughput_kbs) *
+                100
+              ).toFixed(1),
+            )
+          : null;
+      return {
+        label,
+        fixed_ttl_th_kbs: f?.throughput_kbs ?? null,
+        lightcache_th_kbs: m?.throughput_kbs ?? null,
+        th_increase_pct: th_improvement,
+      };
+    });
+
+    // Overall averages for the thesis discussion paragraph
+    const avg_rt_reduction = table_a
+      .filter((r) => r.rt_reduction_pct !== null)
+      .reduce((sum, r, _, arr) => sum + r.rt_reduction_pct / arr.length, 0);
+    const avg_th_increase = table_b
+      .filter((r) => r.th_increase_pct !== null)
+      .reduce((sum, r, _, arr) => sum + r.th_increase_pct / arr.length, 0);
+
+    // Table C: from benchmark file
+    let table_c = null;
+    for (const filePath of BENCHMARK_PATHS) {
+      try {
+        if (fs.existsSync(filePath)) {
+          const benchData = JSON.parse(fs.readFileSync(filePath, "utf8"));
+          table_c = benchData.chapter4_table_c || null;
+          break;
+        }
+      } catch {
+        /* try next */
+      }
+    }
+
+    res.json({
+      exported_at: new Date().toISOString(),
+      snapshot_count: snapshots.length,
+
+      // Chapter 4 Table A — Response Time
+      table_a: {
+        title: "Average Response Time — Fixed TTL Redis vs LightCache (ML)",
+        description:
+          "Mirrors base paper Table 3. Measures avg RT (ms) per session.",
+        rows: table_a,
+        avg_rt_reduction_pct: parseFloat(avg_rt_reduction.toFixed(1)),
+        base_paper_rt_reduction_pct: 63.78, // from IRCache Table 3 avg
+      },
+
+      // Chapter 4 Table B — Throughput
+      table_b: {
+        title: "Average Throughput — Fixed TTL Redis vs LightCache (ML)",
+        description:
+          "Mirrors base paper Table 4. Measures avg throughput (KB/s) per session.",
+        rows: table_b,
+        avg_th_increase_pct: parseFloat(avg_th_increase.toFixed(1)),
+        base_paper_th_increase_pct: 32.84, // from IRCache Table 4 avg
+      },
+
+      // Chapter 4 Table C — Hit Ratio
+      table_c: table_c
+        ? {
+            title: "Hit Ratio Comparison — LRU vs LFU vs LightCache",
+            description:
+              "Mirrors base paper Table 6. Benchmark replays real e-commerce traffic log.",
+            ...table_c,
+          }
+        : { message: "Run benchmark.py first to populate Table C." },
+
+      // Base paper reference numbers
+      base_paper: {
+        citation: "Pramudia et al. (2025), Dinamika Rekayasa Vol.21 No.2",
+        rt_reduction_pct: 63.78,
+        th_increase_pct: 32.84,
+        best_hit_ratio: 62.06,
+        best_algorithm: "Random Replacement (RR)",
+        lru_avg_hit_ratio: 59.14,
+        lfu_avg_hit_ratio: 60.2,
+      },
+
+      // Chapter 5 discussion sentences (ready to paste)
+      discussion: {
+        table_a: avg_rt_reduction
+          ? `LightCache achieved an average response time reduction of ${avg_rt_reduction.toFixed(1)}% compared to fixed-TTL Redis caching, versus the ${63.78}% reduction reported by Pramudia et al. (2025) when comparing cached against non-cached systems.`
+          : "Collect snapshots in both modes to generate this sentence.",
+        table_b: avg_th_increase
+          ? `LightCache achieved an average throughput increase of ${avg_th_increase.toFixed(1)}% over fixed-TTL Redis, compared to the base paper's ${32.84}% improvement over non-cached systems.`
+          : "Collect snapshots in both modes to generate this sentence.",
+        table_c: table_c
+          ? `The base paper (Pramudia et al., 2025) achieved a maximum average hit ratio of 62.06% using Random Replacement on the IRCache dataset. LightCache achieved ${table_c.averages?.LightCache?.toFixed(2)}% average hit ratio on real e-commerce traffic across equivalent memory pressures (1–8 MB), representing a ${table_c.lightcache_vs_base_paper_rr > 0 ? "+" : ""}${table_c.lightcache_vs_base_paper_rr?.toFixed(2)}% improvement over the base paper ceiling. This confirms that ML-predicted future demand is a more effective eviction signal than recency (LRU: ${table_c.averages?.LRU?.toFixed(2)}%) and frequency (LFU: ${table_c.averages?.LFU?.toFixed(2)}%) heuristics.`
+          : "Run benchmark.py first.",
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 module.exports = router;

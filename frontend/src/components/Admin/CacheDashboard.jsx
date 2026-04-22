@@ -22,9 +22,15 @@ const CacheDashboard = () => {
   const [mlReadiness, setMlReadiness] = useState(null);
   const [simulating, setSimulating] = useState(false);
   const [retraining, setRetraining] = useState(false);
-  const [mlActionMsg, setMlActionMsg] = useState(null); // { type: "ok"|"err", text }
+  const [mlActionMsg, setMlActionMsg] = useState(null);
   const [benchmarkRunning, setBenchmarkRunning] = useState(false);
-  const [benchmarkMsg, setBenchmarkMsg] = useState(null); // { type: "ok"|"err", text }
+  const [benchmarkMsg, setBenchmarkMsg] = useState(null);
+  const [evaluation, setEvaluation] = useState(null);
+  const [snapshots, setSnapshots] = useState([]);
+  const [snapshotLabel, setSnapshotLabel] = useState("");
+  const [savingSnapshot, setSavingSnapshot] = useState(false);
+  const [snapshotMsg, setSnapshotMsg] = useState(null);
+  const [exportData, setExportData] = useState(null);
 
   // Auth helpers
   const authHeaders = useCallback(
@@ -79,6 +85,14 @@ const CacheDashboard = () => {
       setMlMode(modeRes.data.mode || "redis_only");
       setMlReadiness(modeRes.data.readiness || null);
       setModelMetrics(metricsRes?.data || null);
+
+      authGet(`${BASE}/api/cache/snapshots`)
+        .then((r) => setSnapshots(r.data?.snapshots || []))
+        .catch(() => {});
+
+      authGet(`${BASE}/api/cache/chapter4-export`)
+        .then((r) => setExportData(r.data))
+        .catch(() => {});
     } catch (err) {
       if (err.response?.status === 401) return;
       setError("Failed to load cache data. Make sure Redis is running.");
@@ -157,6 +171,58 @@ const CacheDashboard = () => {
       setTimeout(() => setBenchmarkMsg(null), 8000);
     }
   };
+
+  const handleSaveSnapshot = async () => {
+    if (!snapshotLabel.trim()) {
+      setSnapshotMsg({
+        type: "err",
+        text: "Enter a label (e.g. 'Session 1 Fixed TTL')",
+      });
+      return;
+    }
+    setSavingSnapshot(true);
+    setSnapshotMsg(null);
+    try {
+      const BASE = import.meta.env.VITE_BACKEND_URL;
+      const res = await axios.post(
+        `${BASE}/api/cache/snapshot`,
+        { label: snapshotLabel.trim(), mode: mlMode },
+        authHeaders(),
+      );
+      setSnapshotMsg({
+        type: "ok",
+        text: `Snapshot saved: ${res.data.snapshot?.hit_rate_pct}% hit rate, ${res.data.snapshot?.avg_rt_ms}ms RT`,
+      });
+      setSnapshotLabel("");
+      fetchData();
+    } catch (err) {
+      if (err.response?.status === 401) return handleUnauthorized();
+      setSnapshotMsg({
+        type: "err",
+        text: err.response?.data?.message || "Snapshot failed.",
+      });
+    } finally {
+      setSavingSnapshot(false);
+      setTimeout(() => setSnapshotMsg(null), 8000);
+    }
+  };
+
+  const handleClearSnapshots = async () => {
+    if (
+      !window.confirm("Clear all evaluation snapshots? This cannot be undone.")
+    )
+      return;
+    try {
+      const BASE = import.meta.env.VITE_BACKEND_URL;
+      await axios.delete(`${BASE}/api/cache/snapshots`, authHeaders());
+      setSnapshots([]);
+      setExportData(null);
+      fetchData();
+    } catch (err) {
+      if (err.response?.status === 401) return handleUnauthorized();
+    }
+  };
+
   const showMlMsg = (type, text) => {
     setMlActionMsg({ type, text });
     setTimeout(() => setMlActionMsg(null), 6000);
@@ -427,6 +493,7 @@ const CacheDashboard = () => {
         {[
           "overview",
           "benchmark",
+          "evaluation",
           "keys",
           "logs",
           "retraining",
@@ -442,11 +509,13 @@ const CacheDashboard = () => {
                 : "text-gray-500 hover:text-black"
             }`}
           >
-            {tab === "ml-control"
-              ? "ML Control"
-              : tab === "model-metrics"
-                ? "Model Metrics"
-                : tab}
+            {tab === "evaluation"
+              ? "Evaluation"
+              : tab === "ml-control"
+                ? "ML Control"
+                : tab === "model-metrics"
+                  ? "Model Metrics"
+                  : tab}
             {tab === "ml-control" && (
               <span
                 className={`ml-1.5 inline-block w-2 h-2 rounded-full ${
@@ -911,7 +980,507 @@ const CacheDashboard = () => {
         </div>
       )}
 
-      {/* ── Keys ─────────────────────────────────────────────────────────────── */}
+      {activeTab === "evaluation" && (
+        <div className="space-y-6">
+          {/* Header */}
+          <div className="border rounded-lg p-5 bg-gray-50">
+            <h2 className="font-semibold text-lg">Chapter 4 Evaluation</h2>
+            <p className="text-xs text-gray-500 mt-1 max-w-2xl">
+              Collects Response Time, Throughput, and Hit Ratio data for thesis
+              Chapter 4. Mirrors the evaluation methodology of the base paper
+              (Pramudia et al., 2025 — IRCache). Run the store in each mode,
+              then save a snapshot after each session.
+            </p>
+          </div>
+
+          {/* Snapshot capture */}
+          <div className="border rounded-lg overflow-hidden">
+            <div className="px-4 py-3 bg-gray-50 border-b">
+              <h2 className="font-semibold">Save Evaluation Snapshot</h2>
+              <p className="text-xs text-gray-500 mt-1">
+                Current mode:{" "}
+                <span
+                  className={`font-semibold ${mlMode === "ml_active" ? "text-green-700" : "text-gray-700"}`}
+                >
+                  {mlMode === "ml_active" ? "LightCache ML" : "Fixed TTL Redis"}
+                </span>
+                . Browse the store, then click Save to record RT, Throughput,
+                and Hit Rate for this session.
+              </p>
+            </div>
+            <div className="p-4 space-y-3">
+              <div className="flex gap-3">
+                <input
+                  type="text"
+                  value={snapshotLabel}
+                  onChange={(e) => setSnapshotLabel(e.target.value)}
+                  placeholder='e.g. "Session 1 — Fixed TTL" or "Session 2 — LightCache ML"'
+                  className="flex-1 px-3 py-2 border rounded text-sm focus:outline-none focus:ring-1 focus:ring-black"
+                />
+                <button
+                  onClick={handleSaveSnapshot}
+                  disabled={savingSnapshot}
+                  className="px-4 py-2 bg-black text-white rounded text-sm hover:bg-gray-800 disabled:opacity-50 whitespace-nowrap"
+                >
+                  {savingSnapshot ? "Saving…" : "Save Snapshot"}
+                </button>
+                {snapshots.length > 0 && (
+                  <button
+                    onClick={handleClearSnapshots}
+                    className="px-4 py-2 border border-red-300 text-red-600 rounded text-sm hover:bg-red-50"
+                  >
+                    Clear All
+                  </button>
+                )}
+              </div>
+              {snapshotMsg && (
+                <p
+                  className={`text-xs font-medium ${snapshotMsg.type === "ok" ? "text-green-700" : "text-red-600"}`}
+                >
+                  {snapshotMsg.type === "ok" ? "✓ " : "✗ "}
+                  {snapshotMsg.text}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Saved snapshots list */}
+          {snapshots.length > 0 && (
+            <div className="border rounded-lg overflow-hidden">
+              <div className="px-4 py-3 bg-gray-50 border-b">
+                <h2 className="font-semibold">
+                  Saved Snapshots ({snapshots.length})
+                </h2>
+                <p className="text-xs text-gray-500 mt-1">
+                  Each row is one evaluation session. Builds Table A and Table
+                  B.
+                </p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
+                    <tr>
+                      {[
+                        "Label",
+                        "Mode",
+                        "Requests",
+                        "Hit Rate",
+                        "Avg RT (ms)",
+                        "Throughput (KB/s)",
+                        "Captured",
+                      ].map((h) => (
+                        <th
+                          key={h}
+                          className="px-4 py-2 text-left whitespace-nowrap"
+                        >
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {snapshots.map((s, i) => (
+                      <tr key={i} className="border-t">
+                        <td className="px-4 py-2 font-medium">{s.label}</td>
+                        <td className="px-4 py-2">
+                          <span
+                            className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                              s.mode === "ml_active"
+                                ? "bg-black text-white"
+                                : "bg-gray-100 text-gray-700"
+                            }`}
+                          >
+                            {s.mode === "ml_active"
+                              ? "LightCache ML"
+                              : "Fixed TTL"}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2">
+                          {s.total_requests?.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-2">
+                          <span
+                            className={`font-bold ${s.hit_rate_pct >= 50 ? "text-green-600" : "text-yellow-600"}`}
+                          >
+                            {s.hit_rate_pct}%
+                          </span>
+                        </td>
+                        <td className="px-4 py-2">{s.avg_rt_ms}</td>
+                        <td className="px-4 py-2">{s.throughput_kbs}</td>
+                        <td className="px-4 py-2 text-xs text-gray-400">
+                          {s.captured_at
+                            ? new Date(s.captured_at).toLocaleString()
+                            : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Chapter 4 Tables  */}
+          {exportData && (
+            <>
+              {/* Table A — Response Time */}
+              <div className="border rounded-lg overflow-hidden">
+                <div className="px-4 py-3 bg-blue-50 border-b border-blue-100">
+                  <h2 className="font-semibold text-blue-900">
+                    Table A — Average Response Time (ms)
+                  </h2>
+                  <p className="text-xs text-blue-600 mt-1">
+                    Mirrors IRCache Table 3. Base paper avg RT reduction:{" "}
+                    <strong>63.78%</strong> (cache vs no-cache).
+                  </p>
+                </div>
+                {exportData.table_a?.rows?.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 text-gray-500">
+                        <tr>
+                          <th className="px-4 py-2 text-left">Session</th>
+                          <th className="px-4 py-2 text-left">
+                            Fixed TTL Redis (ms)
+                          </th>
+                          <th className="px-4 py-2 text-left">
+                            LightCache ML (ms)
+                          </th>
+                          <th className="px-4 py-2 text-left">
+                            RT Reduction (%)
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {exportData.table_a.rows.map((row, i) => (
+                          <tr key={i} className="border-t">
+                            <td className="px-4 py-2 font-medium">
+                              {row.label}
+                            </td>
+                            <td className="px-4 py-2">
+                              {row.fixed_ttl_rt_ms ?? "—"}
+                            </td>
+                            <td className="px-4 py-2">
+                              {row.lightcache_rt_ms ?? "—"}
+                            </td>
+                            <td className="px-4 py-2">
+                              {row.rt_reduction_pct !== null ? (
+                                <span
+                                  className={`font-bold ${row.rt_reduction_pct > 0 ? "text-green-600" : "text-red-500"}`}
+                                >
+                                  {row.rt_reduction_pct > 0 ? "+" : ""}
+                                  {row.rt_reduction_pct}%
+                                </span>
+                              ) : (
+                                "—"
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                        {exportData.table_a.avg_rt_reduction_pct !==
+                          undefined && (
+                          <tr className="border-t bg-gray-50 font-semibold">
+                            <td className="px-4 py-2">Average</td>
+                            <td className="px-4 py-2">—</td>
+                            <td className="px-4 py-2">—</td>
+                            <td className="px-4 py-2 text-green-700">
+                              +{exportData.table_a.avg_rt_reduction_pct}%
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="px-4 py-6 text-center text-gray-400 text-sm">
+                    No snapshots yet. Save sessions in both Fixed TTL and
+                    LightCache ML modes.
+                  </div>
+                )}
+              </div>
+
+              {/* Table B — Throughput */}
+              <div className="border rounded-lg overflow-hidden">
+                <div className="px-4 py-3 bg-purple-50 border-b border-purple-100">
+                  <h2 className="font-semibold text-purple-900">
+                    Table B — Average Throughput (KB/s)
+                  </h2>
+                  <p className="text-xs text-purple-600 mt-1">
+                    Mirrors IRCache Table 4. Base paper avg throughput increase:{" "}
+                    <strong>32.84%</strong> (cache vs no-cache).
+                  </p>
+                </div>
+                {exportData.table_b?.rows?.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 text-gray-500">
+                        <tr>
+                          <th className="px-4 py-2 text-left">Session</th>
+                          <th className="px-4 py-2 text-left">
+                            Fixed TTL Redis (KB/s)
+                          </th>
+                          <th className="px-4 py-2 text-left">
+                            LightCache ML (KB/s)
+                          </th>
+                          <th className="px-4 py-2 text-left">
+                            TH Increase (%)
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {exportData.table_b.rows.map((row, i) => (
+                          <tr key={i} className="border-t">
+                            <td className="px-4 py-2 font-medium">
+                              {row.label}
+                            </td>
+                            <td className="px-4 py-2">
+                              {row.fixed_ttl_th_kbs ?? "—"}
+                            </td>
+                            <td className="px-4 py-2">
+                              {row.lightcache_th_kbs ?? "—"}
+                            </td>
+                            <td className="px-4 py-2">
+                              {row.th_increase_pct !== null ? (
+                                <span
+                                  className={`font-bold ${row.th_increase_pct > 0 ? "text-green-600" : "text-red-500"}`}
+                                >
+                                  {row.th_increase_pct > 0 ? "+" : ""}
+                                  {row.th_increase_pct}%
+                                </span>
+                              ) : (
+                                "—"
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                        {exportData.table_b.avg_th_increase_pct !==
+                          undefined && (
+                          <tr className="border-t bg-gray-50 font-semibold">
+                            <td className="px-4 py-2">Average</td>
+                            <td className="px-4 py-2">—</td>
+                            <td className="px-4 py-2">—</td>
+                            <td className="px-4 py-2 text-green-700">
+                              +{exportData.table_b.avg_th_increase_pct}%
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="px-4 py-6 text-center text-gray-400 text-sm">
+                    No snapshots yet. Save sessions in both Fixed TTL and
+                    LightCache ML modes.
+                  </div>
+                )}
+              </div>
+
+              {/* Table C — Hit Ratio (from benchmark) */}
+              <div className="border rounded-lg overflow-hidden">
+                <div className="px-4 py-3 bg-green-50 border-b border-green-100">
+                  <h2 className="font-semibold text-green-900">
+                    Table C — Hit Ratio Comparison (%)
+                  </h2>
+                  <p className="text-xs text-green-600 mt-1">
+                    Mirrors IRCache Table 6. Base paper best:{" "}
+                    <strong>RR 62.06%</strong>. LightCache target: exceed this
+                    ceiling.
+                  </p>
+                </div>
+                {exportData.table_c?.rows?.length > 0 ? (
+                  <>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-50 text-gray-500">
+                          <tr>
+                            <th className="px-4 py-2 text-left">Cache Size</th>
+                            <th className="px-4 py-2 text-left">LRU (%)</th>
+                            <th className="px-4 py-2 text-left">LFU (%)</th>
+                            <th className="px-4 py-2 text-left">
+                              LightCache (%)
+                            </th>
+                            <th className="px-4 py-2 text-left">
+                              vs Base Paper (RR)
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {exportData.table_c.rows.map((row, i) => (
+                            <tr key={i} className="border-t">
+                              <td className="px-4 py-2 font-medium">
+                                {row.memory_label}
+                              </td>
+                              <td className="px-4 py-2">{row.LRU}%</td>
+                              <td className="px-4 py-2">{row.LFU}%</td>
+                              <td className="px-4 py-2">
+                                <span className="font-bold text-green-600">
+                                  {row.LightCache}%
+                                </span>
+                              </td>
+                              <td className="px-4 py-2">
+                                <span
+                                  className={`font-medium ${row.vs_base_paper_RR_delta >= 0 ? "text-green-600" : "text-red-500"}`}
+                                >
+                                  {row.vs_base_paper_RR_delta >= 0 ? "+" : ""}
+                                  {row.vs_base_paper_RR_delta}%
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                          <tr className="border-t bg-gray-50 font-semibold">
+                            <td className="px-4 py-2">Average</td>
+                            <td className="px-4 py-2">
+                              {exportData.table_c.averages?.LRU}%
+                            </td>
+                            <td className="px-4 py-2">
+                              {exportData.table_c.averages?.LFU}%
+                            </td>
+                            <td className="px-4 py-2 text-green-700">
+                              {exportData.table_c.averages?.LightCache}%
+                            </td>
+                            <td className="px-4 py-2">
+                              <span
+                                className={`font-bold ${exportData.table_c.lightcache_vs_base_paper_rr >= 0 ? "text-green-700" : "text-red-600"}`}
+                              >
+                                {exportData.table_c
+                                  .lightcache_vs_base_paper_rr >= 0
+                                  ? "+"
+                                  : ""}
+                                {exportData.table_c.lightcache_vs_base_paper_rr}
+                                % vs RR (base paper)
+                              </span>
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    {/* Base paper reference row */}
+                    <div className="px-4 py-3 bg-gray-50 border-t">
+                      <p className="text-xs text-gray-500">
+                        Base paper reference (Pramudia et al., 2025 —
+                        IRCache):&nbsp; LRU 59.14% · LFU 60.20% ·{" "}
+                        <strong>RR 62.06% (best)</strong> · FIFO 54.89%
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                  <div className="px-4 py-6 text-center text-gray-400 text-sm">
+                    No benchmark data. Run:{" "}
+                    <code className="bg-gray-100 px-1 rounded">
+                      docker compose exec ml-service python benchmark.py
+                    </code>
+                  </div>
+                )}
+              </div>
+
+              {/* Chapter 5 Discussion sentences */}
+              {exportData.discussion && (
+                <div className="border rounded-lg overflow-hidden">
+                  <div className="px-4 py-3 bg-gray-50 border-b">
+                    <h2 className="font-semibold">
+                      Chapter 5 — Ready-to-Use Discussion Sentences
+                    </h2>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Copy these directly into your thesis. Auto-generated from
+                      your evaluation data.
+                    </p>
+                  </div>
+                  <div className="p-4 space-y-4">
+                    {[
+                      {
+                        title: "Table A (Response Time)",
+                        text: exportData.discussion.table_a,
+                      },
+                      {
+                        title: "Table B (Throughput)",
+                        text: exportData.discussion.table_b,
+                      },
+                      {
+                        title: "Table C (Hit Ratio)",
+                        text: exportData.discussion.table_c,
+                      },
+                    ].map(({ title, text }) => (
+                      <div key={title} className="space-y-1">
+                        <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">
+                          {title}
+                        </p>
+                        <p className="text-sm text-gray-800 bg-gray-50 border rounded p-3 leading-relaxed">
+                          {text}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Evaluation protocol guide */}
+          <div className="border rounded-lg overflow-hidden">
+            <div className="px-4 py-3 bg-gray-50 border-b">
+              <h2 className="font-semibold">Evaluation Protocol (Chapter 4)</h2>
+            </div>
+            <div className="p-4">
+              <ol className="space-y-4 text-sm">
+                {[
+                  {
+                    step: "1",
+                    title: "Table C first — run benchmark (5 minutes)",
+                    desc: "docker compose exec ml-service python benchmark.py — runs on your real traffic log, no browsing needed. Then click Re-run Benchmark in the Benchmark tab.",
+                    done: exportData?.table_c?.rows?.length > 0,
+                  },
+                  {
+                    step: "2",
+                    title: "Table A & B — Fixed TTL session",
+                    desc: "Switch to Plain Redis mode (ML Control tab). Browse the store across multiple routes for 10–15 minutes. Come back here and save a snapshot labelled 'Session 1 — Fixed TTL'.",
+                    done: snapshots.some((s) => s.mode !== "ml_active"),
+                  },
+                  {
+                    step: "3",
+                    title: "Clear logs between sessions",
+                    desc: "Click 'Clear Logs' (top right) between sessions so RT and TH are measured independently for each mode.",
+                    done: false,
+                  },
+                  {
+                    step: "4",
+                    title: "Table A & B — LightCache ML session",
+                    desc: "Switch to ML Active mode (ML Control tab). Browse the same routes for 10–15 minutes. Save a snapshot labelled 'Session 2 — LightCache ML'.",
+                    done: snapshots.some((s) => s.mode === "ml_active"),
+                  },
+                  {
+                    step: "5",
+                    title: "Export for thesis",
+                    desc: "All three tables populate automatically above. The Chapter 5 Discussion sentences are generated from your real numbers — copy them directly into your thesis.",
+                    done:
+                      exportData?.table_a?.rows?.length > 0 &&
+                      exportData?.table_c?.rows?.length > 0,
+                  },
+                ].map((item) => (
+                  <li key={item.step} className="flex gap-3">
+                    <span
+                      className={`shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold mt-0.5 ${
+                        item.done
+                          ? "bg-green-500 text-white"
+                          : "bg-gray-200 text-gray-600"
+                      }`}
+                    >
+                      {item.done ? "✓" : item.step}
+                    </span>
+                    <div>
+                      <p className="font-medium text-gray-800">{item.title}</p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        {item.desc}
+                      </p>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/*  Keys  */}
       {activeTab === "keys" && (
         <div className="space-y-6">
           <div className="border rounded-lg overflow-hidden">
