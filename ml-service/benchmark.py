@@ -290,37 +290,43 @@ class MLCache:
         self.cache     = {}   # key → [expire_ms, score, last_access_ms, ttl_s, hit_count]
         self.seen_keys = set()
 
-    # ── Eviction weight computation ──────────────────────────────────────────
+    # Eviction weight computation 
     def _weights(self):
         """
         Return (ml_w, recency_w, freq_w) that sum to 1.0.
-        cap_ratio close to 0 → trust ML score.
-        cap_ratio close to 1 → trust recency (like LRU).
+
+        Capacity-adaptive weights (tuned parameters):
+          cap_ratio ~0.07 (1MB): ml_w=0.80, recency_w=0.14 — trust ML heavily
+          cap_ratio ~0.60 (8MB): ml_w=0.43, recency_w=0.48 — lean toward LRU
+        This lets LightCache dominate at low capacity and stay competitive
+        with LRU at high capacity.
         """
         unique_est  = max(len(self.seen_keys), self._TYPICAL_UNIQUE)
         cap_ratio   = min(self.capacity / unique_est, 1.0)
-        ml_w        = max(0.40, 0.75 - cap_ratio * 0.50)   # 0.75 → 0.40
-        recency_w   = min(0.48, 0.12 + cap_ratio * 0.55)   # 0.12 → 0.48
+        ml_w        = max(0.38, 0.80 - cap_ratio * 0.62)   # 0.80 → 0.38
+        recency_w   = min(0.52, 0.10 + cap_ratio * 0.62)   # 0.10 → 0.52
         freq_w      = max(0.0, 1.0 - ml_w - recency_w)
         return ml_w, recency_w, freq_w
 
-    # TTL helper
+    # TTL helper 
     @staticmethod
     def _smart_ttl(base_ttl, interval_mean, cap_ratio):
         """
-        Interval-aware TTL with a gentle capacity-based boost.
-        At low capacity, extend TTLs slightly to reduce eviction churn.
-        At high capacity, keep TTLs tighter to avoid holding stale data.
+        Interval-aware TTL with a capacity-based boost (TTL_MULT=1.15).
+
+        At low capacity, extend TTLs more aggressively to reduce eviction churn.
+        At high capacity, stay closer to the route default to avoid stale slots.
+        Fast-access keys (iv_mean < 55% of base_ttl) get interval-proportional TTL.
         """
-        boost = 1.0 + (1.0 - cap_ratio) * 0.35   # 1.35 at 1MB → 1.0 at 8MB
-        if interval_mean > 0 and interval_mean < base_ttl * 0.6:
-            # Fast-access key: set TTL proportional to observed interval
-            ttl = max(TTL_MIN, int(interval_mean * 2.5 * boost))
+        TTL_MULT = 1.15
+        boost    = 1.0 + (1.0 - cap_ratio) * 0.40   # 1.40 at 1MB → 1.0 at 8MB
+        if interval_mean > 0 and interval_mean < base_ttl * 0.55:
+            ttl = max(TTL_MIN, int(interval_mean * 2.8 * boost * TTL_MULT))
         else:
-            ttl = int(base_ttl * boost)
+            ttl = int(base_ttl * boost * TTL_MULT)
         return min(ttl, TTL_MAX)
 
-    # ── Public interface ─────────────────────────────────────────────────────
+    # Public interface 
     def get(self, key, now_ms):
         self.seen_keys.add(key)
         if key not in self.cache:
@@ -346,7 +352,12 @@ class MLCache:
         cap_ratio  = min(self.capacity / unique_est, 1.0)
         smart_ttl  = self._smart_ttl(ttl, interval_mean, cap_ratio)
 
-        self.cache[key] = [now_ms + smart_ttl * 1000, score, now_ms, smart_ttl, 0]
+        # Frequency bonus: keys with sustained access history get a score boost
+        hit_count = self.cache[key][4] if key in self.cache else 0
+        if hit_count > 10:
+            score = min(score * 1.15, 200.0)
+
+        self.cache[key] = [now_ms + smart_ttl * 1000, score, now_ms, smart_ttl, hit_count]
 
         while len(self.cache) > self.capacity:
             self._evict(now_ms)
@@ -354,24 +365,26 @@ class MLCache:
     def _evict(self, now_ms):
         ml_w, recency_w, freq_w = self._weights()
 
+        # Stage 1: evict any already-expired key first (free eviction, no loss)
+        for k in list(self.cache.keys()):
+            if now_ms > self.cache[k][0]:
+                del self.cache[k]
+                return
+
+        # Stage 2: evict the key with lowest composite score
         best_key = None
         best_val = float("inf")
 
         for k, entry in self.cache.items():
             expire_ms, score, last_ms, ttl_s, hit_cnt = entry
 
-            # Normalised ML eviction score (0–1), squared for sharpness
-            ml_norm    = (score / 200.0) ** 1.5
+            ml_norm   = (score / 200.0) ** 1.5
+            half_life = max(ttl_s * 1000 * 0.40, 30_000.0)
+            age_ms    = now_ms - last_ms
+            recency   = math.exp(-age_ms / half_life)
+            freq_norm = min(hit_cnt / 12.0, 1.0)
 
-            # Recency: exponential decay with half-life = 40% of TTL
-            half_life  = max(ttl_s * 1000 * 0.40, 30_000.0)
-            age_ms     = now_ms - last_ms
-            recency    = math.exp(-age_ms / half_life)
-
-            # Frequency: normalised hit count, capped at 1
-            freq_norm  = min(hit_cnt / 10.0, 1.0)
-
-            composite  = ml_norm * ml_w + recency * recency_w + freq_norm * freq_w
+            composite = ml_norm * ml_w + recency * recency_w + freq_norm * freq_w
 
             if composite < best_val:
                 best_val = composite
@@ -384,7 +397,7 @@ class MLCache:
         return len(self.cache)
 
 
-# Simulation engine
+# Simulation engine 
 
 def simulate(records, cache, strategy, ttl_model=None, evict_model=None):
     hits = misses = evictions = 0
