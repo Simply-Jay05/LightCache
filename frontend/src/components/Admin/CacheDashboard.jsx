@@ -26,7 +26,8 @@ const CacheDashboard = () => {
   const [benchmarkRunning, setBenchmarkRunning] = useState(false);
   const [benchmarkMsg, setBenchmarkMsg] = useState(null);
 
-  // Evaluation state
+  // ── CHANGE 1: Add evaluation state ──
+  const [evaluation, setEvaluation] = useState(null);
   const [snapshots, setSnapshots] = useState([]);
   const [snapshotLabel, setSnapshotLabel] = useState("");
   const [savingSnapshot, setSavingSnapshot] = useState(false);
@@ -85,6 +86,7 @@ const CacheDashboard = () => {
       setMlReadiness(modeRes.data.readiness || null);
       setModelMetrics(metricsRes?.data || null);
 
+      // ── CHANGE 2: Add evaluation data fetching ──
       authGet(`${BASE}/api/cache/snapshots`)
         .then((r) => setSnapshots(r.data?.snapshots || []))
         .catch(() => {});
@@ -169,6 +171,7 @@ const CacheDashboard = () => {
     }
   };
 
+  // ── CHANGE 3: Add snapshot handlers ──
   const handleSaveSnapshot = async () => {
     if (!snapshotLabel.trim()) {
       setSnapshotMsg({
@@ -333,6 +336,7 @@ const CacheDashboard = () => {
     return { border: "border-black", badge: "bg-black text-white" };
   };
 
+  // ── CHANGE 4: Update TABS array ──
   const TABS = [
     { id: "overview", label: "Overview" },
     { id: "benchmark", label: "Benchmark" },
@@ -666,391 +670,303 @@ const CacheDashboard = () => {
         </div>
       )}
 
-      {/* ── EVALUATION ── */}
+      {/* ── CHANGE 4: Add EVALUATION panel ── */}
       {activeTab === "evaluation" && (
         <div className="space-y-6">
+          {/* ── Header ─────────────────────────────────────────────────────── */}
           <div className="border rounded-lg p-5 bg-gray-50">
             <h2 className="font-semibold text-lg">Chapter 4 Evaluation</h2>
-            <p className="text-sm text-gray-500 mt-1">
-              Captures Response Time, Throughput, and Hit Ratio data for thesis
-              Chapter 4 tables. Run in Fixed TTL mode first, save a snapshot,
-              then switch to ML mode and save another.
+            <p className="text-xs text-gray-500 mt-1 max-w-2xl">
+              Collects Response Time, Throughput, and Hit Ratio data for thesis
+              Chapter 4. Mirrors the evaluation methodology of the base paper
+              (Pramudia et al., 2025 — IRCache). Run the store in each mode,
+              then save a snapshot after each session.
             </p>
           </div>
 
-          {/* Save Snapshot */}
-          <div className="border rounded-lg p-4 space-y-3">
-            <h3 className="font-semibold text-sm">Save Evaluation Snapshot</h3>
-            <p className="text-xs text-gray-500">
-              Current mode:{" "}
-              <span
-                className={`font-semibold ${mlMode === "ml_active" ? "text-green-600" : "text-gray-700"}`}
-              >
-                {mlMode === "ml_active" ? "LightCache ML" : "Fixed TTL (Redis)"}
-              </span>
-            </p>
-            <div className="flex gap-3">
-              <input
-                type="text"
-                value={snapshotLabel}
-                onChange={(e) => setSnapshotLabel(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSaveSnapshot()}
-                placeholder="e.g. Session 1 — Fixed TTL"
-                className="flex-1 px-3 py-2 border rounded text-sm"
-              />
-              <button
-                onClick={handleSaveSnapshot}
-                disabled={savingSnapshot}
-                className="px-4 py-2 bg-black text-white rounded text-sm disabled:opacity-50"
-              >
-                {savingSnapshot ? "Saving…" : "Save Snapshot"}
-              </button>
-              {snapshots.length > 0 && (
-                <button
-                  onClick={handleClearSnapshots}
-                  className="px-4 py-2 border border-red-300 text-red-600 rounded text-sm"
+          {/* ── Snapshot capture ───────────────────────────────────────────── */}
+          <div className="border rounded-lg overflow-hidden">
+            <div className="px-4 py-3 bg-gray-50 border-b">
+              <h2 className="font-semibold">Save Evaluation Snapshot</h2>
+              <p className="text-xs text-gray-500 mt-1">
+                Current mode:{" "}
+                <span
+                  className={`font-semibold ${mlMode === "ml_active" ? "text-green-700" : "text-gray-700"}`}
                 >
-                  Clear All
+                  {mlMode === "ml_active" ? "LightCache ML" : "Fixed TTL Redis"}
+                </span>
+                . Browse the store, then click Save to record RT, Throughput,
+                and Hit Rate for this session.
+              </p>
+            </div>
+            <div className="p-4 space-y-3">
+              <div className="flex gap-3">
+                <input
+                  type="text"
+                  value={snapshotLabel}
+                  onChange={(e) => setSnapshotLabel(e.target.value)}
+                  placeholder='e.g. "Session 1 — Fixed TTL" or "Session 2 — LightCache ML"'
+                  className="flex-1 px-3 py-2 border rounded text-sm focus:outline-none focus:ring-1 focus:ring-black"
+                />
+                <button
+                  onClick={handleSaveSnapshot}
+                  disabled={savingSnapshot}
+                  className="px-4 py-2 bg-black text-white rounded text-sm hover:bg-gray-800 disabled:opacity-50 whitespace-nowrap"
+                >
+                  {savingSnapshot ? "Saving…" : "Save Snapshot"}
                 </button>
+                {snapshots.length > 0 && (
+                  <button
+                    onClick={handleClearSnapshots}
+                    className="px-4 py-2 border border-red-300 text-red-600 rounded text-sm hover:bg-red-50"
+                  >
+                    Clear All
+                  </button>
+                )}
+              </div>
+              {snapshotMsg && (
+                <p
+                  className={`text-xs font-medium ${snapshotMsg.type === "ok" ? "text-green-700" : "text-red-600"}`}
+                >
+                  {snapshotMsg.type === "ok" ? "✓ " : "✗ "}
+                  {snapshotMsg.text}
+                </p>
               )}
             </div>
-            {snapshotMsg && (
-              <p
-                className={`text-xs ${snapshotMsg.type === "ok" ? "text-green-600" : "text-red-500"}`}
-              >
-                {snapshotMsg.text}
-              </p>
-            )}
           </div>
 
-          {/* Snapshots Table */}
+          {/* ── Saved snapshots list ────────────────────────────────────────── */}
           {snapshots.length > 0 && (
             <div className="border rounded-lg overflow-hidden">
               <div className="px-4 py-3 bg-gray-50 border-b">
-                <h3 className="font-semibold text-sm">
+                <h2 className="font-semibold">
                   Saved Snapshots ({snapshots.length})
-                </h3>
+                </h2>
+                <p className="text-xs text-gray-500 mt-1">
+                  Each row is one evaluation session. Builds Table A and Table
+                  B.
+                </p>
               </div>
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-xs uppercase text-gray-500">
-                  <tr>
-                    {[
-                      "Label",
-                      "Mode",
-                      "Requests",
-                      "Hit Rate",
-                      "Avg RT (ms)",
-                      "Throughput (KB/s)",
-                      "ML Coverage",
-                    ].map((h) => (
-                      <th key={h} className="px-4 py-2 text-left">
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {snapshots.map((s, i) => (
-                    <tr key={i} className="border-t hover:bg-gray-50">
-                      <td className="px-4 py-2 font-medium">{s.label}</td>
-                      <td className="px-4 py-2">
-                        <span
-                          className={`text-xs px-2 py-0.5 rounded-full ${s.mode === "ml_active" ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-700"}`}
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
+                    <tr>
+                      {[
+                        "Label",
+                        "Mode",
+                        "Requests",
+                        "Hit Rate",
+                        "Avg RT (ms)",
+                        "Throughput (KB/s)",
+                        "Captured",
+                      ].map((h) => (
+                        <th
+                          key={h}
+                          className="px-4 py-2 text-left whitespace-nowrap"
                         >
-                          {s.mode === "ml_active" ? "ML Active" : "Fixed TTL"}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2">
-                        {s.total_requests?.toLocaleString()}
-                      </td>
-                      <td className="px-4 py-2 font-bold text-green-700">
-                        {s.hit_rate_pct}%
-                      </td>
-                      <td className="px-4 py-2">{s.avg_rt_ms}</td>
-                      <td className="px-4 py-2">{s.throughput_kbs}</td>
-                      <td className="px-4 py-2">{s.ml_coverage_pct}%</td>
+                          {h}
+                        </th>
+                      ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {snapshots.map((s, i) => (
+                      <tr key={i} className="border-t">
+                        <td className="px-4 py-2 font-medium">{s.label}</td>
+                        <td className="px-4 py-2">
+                          <span
+                            className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                              s.mode === "ml_active"
+                                ? "bg-black text-white"
+                                : "bg-gray-100 text-gray-700"
+                            }`}
+                          >
+                            {s.mode === "ml_active"
+                              ? "LightCache ML"
+                              : "Fixed TTL"}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2">
+                          {s.total_requests?.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-2">
+                          <span
+                            className={`font-bold ${s.hit_rate_pct >= 50 ? "text-green-600" : "text-yellow-600"}`}
+                          >
+                            {s.hit_rate_pct}%
+                          </span>
+                        </td>
+                        <td className="px-4 py-2">{s.avg_rt_ms}</td>
+                        <td className="px-4 py-2">{s.throughput_kbs}</td>
+                        <td className="px-4 py-2 text-xs text-gray-400">
+                          {s.captured_at
+                            ? new Date(s.captured_at).toLocaleString()
+                            : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
-          {/* Table A — Response Time */}
-          {exportData?.table_a?.rows?.length > 0 && (
-            <div className="border rounded-lg overflow-hidden">
-              <div className="px-4 py-3 bg-blue-50 border-b border-blue-100 flex justify-between items-center">
-                <div>
+          {/* ── Chapter 4 Tables ───────────────────────────────────────────── */}
+          {exportData && (
+            <>
+              {/* Table A — Response Time */}
+              <div className="border rounded-lg overflow-hidden">
+                <div className="px-4 py-3 bg-blue-50 border-b border-blue-100">
                   <h2 className="font-semibold text-blue-900">
                     Table A — Average Response Time (ms)
                   </h2>
-                  <p className="text-xs text-blue-600 mt-0.5">
-                    Fixed TTL Redis vs LightCache ML · mirrors base paper Table
-                    3
+                  <p className="text-xs text-blue-600 mt-1">
+                    Mirrors IRCache Table 3. Base paper avg RT reduction:{" "}
+                    <strong>63.78%</strong> (cache vs no-cache).
                   </p>
                 </div>
-                {exportData.table_a.avg_rt_reduction_pct != null && (
-                  <div className="text-right">
-                    <p className="text-xs text-gray-500">Avg RT Reduction</p>
-                    <p className="text-xl font-bold text-blue-700">
-                      {exportData.table_a.avg_rt_reduction_pct}%
-                    </p>
-                    <p className="text-xs text-gray-400">
-                      Base paper:{" "}
-                      {exportData.table_a.base_paper_rt_reduction_pct}%
-                    </p>
+                {exportData.table_a?.rows?.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 text-gray-500">
+                        <tr>
+                          <th className="px-4 py-2 text-left">Session</th>
+                          <th className="px-4 py-2 text-left">
+                            Fixed TTL Redis (ms)
+                          </th>
+                          <th className="px-4 py-2 text-left">
+                            LightCache ML (ms)
+                          </th>
+                          <th className="px-4 py-2 text-left">
+                            RT Reduction (%)
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {exportData.table_a.rows.map((row, i) => (
+                          <tr key={i} className="border-t">
+                            <td className="px-4 py-2 font-medium">
+                              {row.label}
+                            </td>
+                            <td className="px-4 py-2">
+                              {row.fixed_ttl_rt_ms ?? "—"}
+                            </td>
+                            <td className="px-4 py-2">
+                              {row.lightcache_rt_ms ?? "—"}
+                            </td>
+                            <td className="px-4 py-2">
+                              {row.rt_reduction_pct !== null ? (
+                                <span
+                                  className={`font-bold ${row.rt_reduction_pct > 0 ? "text-green-600" : "text-red-500"}`}
+                                >
+                                  {row.rt_reduction_pct > 0 ? "+" : ""}
+                                  {row.rt_reduction_pct}%
+                                </span>
+                              ) : (
+                                "—"
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                        {exportData.table_a.avg_rt_reduction_pct !==
+                          undefined && (
+                          <tr className="border-t bg-gray-50 font-semibold">
+                            <td className="px-4 py-2">Average</td>
+                            <td className="px-4 py-2">—</td>
+                            <td className="px-4 py-2">—</td>
+                            <td className="px-4 py-2 text-green-700">
+                              +{exportData.table_a.avg_rt_reduction_pct}%
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="px-4 py-6 text-center text-gray-400 text-sm">
+                    No snapshots yet. Save sessions in both Fixed TTL and
+                    LightCache ML modes.
                   </div>
                 )}
               </div>
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-xs uppercase text-gray-500">
-                  <tr>
-                    {[
-                      "Session",
-                      "Fixed TTL (ms)",
-                      "LightCache (ms)",
-                      "RT Reduction",
-                    ].map((h) => (
-                      <th key={h} className="px-4 py-2 text-left">
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {exportData.table_a.rows.map((row, i) => (
-                    <tr key={i} className="border-t">
-                      <td className="px-4 py-2">{row.label}</td>
-                      <td className="px-4 py-2">
-                        {row.fixed_ttl_rt_ms ?? "—"}
-                      </td>
-                      <td className="px-4 py-2">
-                        {row.lightcache_rt_ms ?? "—"}
-                      </td>
-                      <td className="px-4 py-2 font-bold text-green-600">
-                        {row.rt_reduction_pct != null
-                          ? `+${row.rt_reduction_pct}%`
-                          : "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
 
-          {/* Table B — Throughput */}
-          {exportData?.table_b?.rows?.length > 0 && (
-            <div className="border rounded-lg overflow-hidden">
-              <div className="px-4 py-3 bg-purple-50 border-b border-purple-100 flex justify-between items-center">
-                <div>
+              {/* Table B — Throughput */}
+              <div className="border rounded-lg overflow-hidden">
+                <div className="px-4 py-3 bg-purple-50 border-b border-purple-100">
                   <h2 className="font-semibold text-purple-900">
-                    Table B — Throughput (KB/s)
+                    Table B — Average Throughput (KB/s)
                   </h2>
-                  <p className="text-xs text-purple-600 mt-0.5">
-                    Fixed TTL Redis vs LightCache ML · mirrors base paper Table
-                    4
+                  <p className="text-xs text-purple-600 mt-1">
+                    Mirrors IRCache Table 4. Base paper avg throughput increase:{" "}
+                    <strong>32.84%</strong> (cache vs no-cache).
                   </p>
                 </div>
-                {exportData.table_b.avg_th_increase_pct != null && (
-                  <div className="text-right">
-                    <p className="text-xs text-gray-500">Avg TH Increase</p>
-                    <p className="text-xl font-bold text-purple-700">
-                      {exportData.table_b.avg_th_increase_pct}%
-                    </p>
-                    <p className="text-xs text-gray-400">
-                      Base paper:{" "}
-                      {exportData.table_b.base_paper_th_increase_pct}%
-                    </p>
+                {exportData.table_b?.rows?.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 text-gray-500">
+                        <tr>
+                          <th className="px-4 py-2 text-left">Session</th>
+                          <th className="px-4 py-2 text-left">
+                            Fixed TTL Redis (KB/s)
+                          </th>
+                          <th className="px-4 py-2 text-left">
+                            LightCache ML (KB/s)
+                          </th>
+                          <th className="px-4 py-2 text-left">
+                            TH Increase (%)
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {exportData.table_b.rows.map((row, i) => (
+                          <tr key={i} className="border-t">
+                            <td className="px-4 py-2 font-medium">
+                              {row.label}
+                            </td>
+                            <td className="px-4 py-2">
+                              {row.fixed_ttl_th_kbs ?? "—"}
+                            </td>
+                            <td className="px-4 py-2">
+                              {row.lightcache_th_kbs ?? "—"}
+                            </td>
+                            <td className="px-4 py-2">
+                              {row.th_increase_pct !== null ? (
+                                <span
+                                  className={`font-bold ${row.th_increase_pct > 0 ? "text-green-600" : "text-red-500"}`}
+                                >
+                                  {row.th_increase_pct > 0 ? "+" : ""}
+                                  {row.th_increase_pct}%
+                                </span>
+                              ) : (
+                                "—"
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                        {exportData.table_b.avg_th_increase_pct !==
+                          undefined && (
+                          <tr className="border-t bg-gray-50 font-semibold">
+                            <td className="px-4 py-2">Average</td>
+                            <td className="px-4 py-2">—</td>
+                            <td className="px-4 py-2">—</td>
+                            <td className="px-4 py-2 text-green-700">
+                              +{exportData.table_b.avg_th_increase_pct}%
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="px-4 py-6 text-center text-gray-400 text-sm">
+                    No snapshots yet. Save sessions in both Fixed TTL and
+                    LightCache ML modes.
                   </div>
                 )}
               </div>
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-xs uppercase text-gray-500">
-                  <tr>
-                    {[
-                      "Session",
-                      "Fixed TTL (KB/s)",
-                      "LightCache (KB/s)",
-                      "TH Increase",
-                    ].map((h) => (
-                      <th key={h} className="px-4 py-2 text-left">
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {exportData.table_b.rows.map((row, i) => (
-                    <tr key={i} className="border-t">
-                      <td className="px-4 py-2">{row.label}</td>
-                      <td className="px-4 py-2">
-                        {row.fixed_ttl_th_kbs ?? "—"}
-                      </td>
-                      <td className="px-4 py-2">
-                        {row.lightcache_th_kbs ?? "—"}
-                      </td>
-                      <td className="px-4 py-2 font-bold text-green-600">
-                        {row.th_increase_pct != null
-                          ? `+${row.th_increase_pct}%`
-                          : "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            </>
           )}
-
-          {/* Table C — Hit Ratio from benchmark */}
-          {exportData?.table_c?.rows?.length > 0 && (
-            <div className="border rounded-lg overflow-hidden">
-              <div className="px-4 py-3 bg-green-50 border-b border-green-100 flex justify-between items-center">
-                <div>
-                  <h2 className="font-semibold text-green-900">
-                    Table C — Hit Ratio Comparison (%)
-                  </h2>
-                  <p className="text-xs text-green-600 mt-0.5">
-                    LRU vs LFU vs LightCache · mirrors base paper Table 6
-                  </p>
-                </div>
-                {exportData.table_c.averages && (
-                  <div className="text-right">
-                    <p className="text-xs text-gray-500">LightCache avg</p>
-                    <p className="text-xl font-bold text-green-700">
-                      {exportData.table_c.averages.LightCache?.toFixed(2)}%
-                    </p>
-                    <p className="text-xs text-gray-400">
-                      Base paper RR: {exportData.table_c.base_paper?.RR}%
-                    </p>
-                  </div>
-                )}
-              </div>
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-xs uppercase text-gray-500">
-                  <tr>
-                    {[
-                      "Cache Size",
-                      "LRU (%)",
-                      "LFU (%)",
-                      "LightCache (%)",
-                      "Best",
-                    ].map((h) => (
-                      <th key={h} className="px-4 py-2 text-left">
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {exportData.table_c.rows.map((row, i) => {
-                    const best = Math.max(row.LRU, row.LFU, row.LightCache);
-                    return (
-                      <tr key={i} className="border-t">
-                        <td className="px-4 py-2 font-medium">
-                          {row.memory_label}
-                        </td>
-                        <td className="px-4 py-2">{row.LRU}%</td>
-                        <td className="px-4 py-2">{row.LFU}%</td>
-                        <td
-                          className={`px-4 py-2 font-bold ${row.LightCache === best ? "text-green-600" : "text-gray-700"}`}
-                        >
-                          {row.LightCache}%
-                        </td>
-                        <td className="px-4 py-2 text-xs">
-                          {row.LightCache === best ? (
-                            <span className="px-2 py-0.5 bg-green-100 text-green-800 rounded-full">
-                              LightCache ◄
-                            </span>
-                          ) : row.LRU === best ? (
-                            <span className="px-2 py-0.5 bg-gray-100 text-gray-700 rounded-full">
-                              LRU
-                            </span>
-                          ) : (
-                            <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded-full">
-                              LFU
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {exportData.table_c.averages && (
-                    <tr className="border-t bg-gray-50 font-semibold">
-                      <td className="px-4 py-2">Average</td>
-                      <td className="px-4 py-2">
-                        {exportData.table_c.averages.LRU?.toFixed(2)}%
-                      </td>
-                      <td className="px-4 py-2">
-                        {exportData.table_c.averages.LFU?.toFixed(2)}%
-                      </td>
-                      <td className="px-4 py-2 text-green-700">
-                        {exportData.table_c.averages.LightCache?.toFixed(2)}%
-                      </td>
-                      <td className="px-4 py-2" />
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* Chapter 5 Discussion Sentences */}
-          {exportData?.discussion && (
-            <div className="border rounded-lg overflow-hidden">
-              <div className="px-4 py-3 bg-gray-50 border-b">
-                <h2 className="font-semibold">
-                  Chapter 5 — Auto-generated Discussion
-                </h2>
-                <p className="text-xs text-gray-500 mt-0.5">
-                  Copy these directly into your thesis write-up
-                </p>
-              </div>
-              <div className="p-4 space-y-3">
-                {[
-                  exportData.discussion.table_a,
-                  exportData.discussion.table_b,
-                  exportData.discussion.table_c,
-                ]
-                  .filter(Boolean)
-                  .map((sentence, i) => (
-                    <div key={i} className="relative group">
-                      <p className="text-sm bg-gray-50 border rounded p-3 pr-16 italic leading-relaxed">
-                        "{sentence}"
-                      </p>
-                      <button
-                        onClick={() => navigator.clipboard.writeText(sentence)}
-                        className="absolute right-2 top-2 text-xs px-2 py-1 border rounded opacity-0 group-hover:opacity-100 transition-opacity bg-white"
-                      >
-                        Copy
-                      </button>
-                    </div>
-                  ))}
-              </div>
-            </div>
-          )}
-
-          {/* Evaluation Protocol */}
-          <div className="border rounded-lg p-5">
-            <h3 className="font-semibold mb-4">Evaluation Protocol</h3>
-            <ol className="space-y-3 text-sm">
-              {[
-                "Run benchmark in the Benchmark tab — this populates Table C automatically.",
-                "Ensure you are in Fixed TTL mode (ML Control tab). Browse the store for 5–10 minutes to generate traffic.",
-                "Return here, label the snapshot (e.g. 'Session 1 — Fixed TTL') and click Save Snapshot.",
-                "Switch to LightCache ML mode (ML Control tab). Browse the store for another 5–10 minutes.",
-                "Return here, label the snapshot (e.g. 'Session 1 — ML Active') and click Save Snapshot.",
-                "Tables A, B and the Chapter 5 discussion sentences will populate automatically.",
-              ].map((step, i) => (
-                <li key={i} className="flex gap-3">
-                  <span className="w-6 h-6 bg-black text-white rounded-full flex items-center justify-center text-xs flex-shrink-0">
-                    {i + 1}
-                  </span>
-                  <span className="text-gray-700">{step}</span>
-                </li>
-              ))}
-            </ol>
-          </div>
         </div>
       )}
 
@@ -1059,32 +975,68 @@ const CacheDashboard = () => {
         <div className="space-y-6">
           <div className="border rounded-lg overflow-hidden">
             <div className="px-4 py-3 bg-gray-50 border-b">
-              <h2 className="font-semibold">
-                Cached Product Keys ({cached_keys?.length ?? 0})
-              </h2>
+              <h2 className="font-semibold">Currently Cached Keys</h2>
             </div>
-            <div className="p-4 flex flex-wrap gap-2">
-              {(cached_keys || []).map((k) => (
-                <div
-                  key={k.key}
-                  className="px-3 py-1.5 bg-gray-100 rounded text-xs font-mono flex items-center gap-2"
-                >
-                  <span>{k.key}</span>
-                  <span className="text-gray-400">{k.ttl}s</span>
-                </div>
-              ))}
-            </div>
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+                <tr>
+                  {["Key", "TTL Remaining", "Source Mode"].map((h) => (
+                    <th key={h} className="px-4 py-2 text-left">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {cached_keys.map((k) => (
+                  <tr key={k.key} className="border-t hover:bg-gray-50">
+                    <td className="px-4 py-2 font-mono text-xs">{k.key}</td>
+                    <td className="px-4 py-2">{k.ttl}s</td>
+                    <td className="px-4 py-2">
+                      <span
+                        className={`text-xs px-2 py-0.5 rounded-full ${k.mode === "ml" ? "bg-black text-white" : "bg-gray-100 text-gray-600"}`}
+                      >
+                        {k.mode === "ml" ? "ML Prediction" : "Fixed Default"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+                {cached_keys.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan="3"
+                      className="px-4 py-8 text-center text-gray-400"
+                    >
+                      Cache is currently empty
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
+        </div>
+      )}
 
-          {top_keys?.length > 0 && (
-            <div className="border rounded-lg overflow-hidden">
-              <div className="px-4 py-3 bg-gray-50 border-b">
-                <h2 className="font-semibold">Top Keys by Access Count</h2>
-              </div>
+      {/* ── LOGS ── */}
+      {activeTab === "logs" && (
+        <div className="space-y-6">
+          <div className="border rounded-lg overflow-hidden">
+            <div className="px-4 py-3 bg-gray-50 border-b flex justify-between items-center">
+              <h2 className="font-semibold">Recent Activity</h2>
+              <span className="text-xs text-gray-400">Last 50 events</span>
+            </div>
+            <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 text-xs uppercase text-gray-500">
                   <tr>
-                    {["Key", "Total", "Hits", "Hit Rate"].map((h) => (
+                    {[
+                      "Time",
+                      "Mode",
+                      "Result",
+                      "Latency",
+                      "Predicted TTL",
+                      "Route",
+                    ].map((h) => (
                       <th key={h} className="px-4 py-2 text-left">
                         {h}
                       </th>
@@ -1092,165 +1044,79 @@ const CacheDashboard = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {top_keys.map((k) => (
-                    <tr key={k.key} className="border-t hover:bg-gray-50">
-                      <td className="px-4 py-2 font-mono text-xs max-w-xs truncate">
-                        {k.key}
+                  {recent_logs.map((log, i) => (
+                    <tr key={i} className="border-t hover:bg-gray-50">
+                      <td className="px-4 py-2 text-gray-400">
+                        {new Date(log.timestamp).toLocaleTimeString()}
                       </td>
-                      <td className="px-4 py-2">{k.total}</td>
-                      <td className="px-4 py-2 text-green-600">{k.hits}</td>
-                      <td className="px-4 py-2">{k.hit_rate}%</td>
+                      <td className="px-4 py-2">
+                        <span className="text-xs border px-1.5 py-0.5 rounded">
+                          {log.mode}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2">
+                        <span
+                          className={`font-medium ${log.result === "hit" ? "text-green-600" : "text-red-500"}`}
+                        >
+                          {log.result.toUpperCase()}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2">{log.latency_ms}ms</td>
+                      <td className="px-4 py-2">
+                        {log.predicted_ttl ? `${log.predicted_ttl}s` : "—"}
+                      </td>
+                      <td className="px-4 py-2 font-mono text-xs truncate max-w-xs">
+                        {log.route}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          )}
-        </div>
-      )}
-
-      {/* ── LOGS ── */}
-      {activeTab === "logs" && (
-        <div className="border rounded-lg overflow-hidden">
-          <div className="px-4 py-3 bg-gray-50 border-b">
-            <h2 className="font-semibold">Recent Cache Events (last 30)</h2>
           </div>
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 text-xs uppercase text-gray-500">
-              <tr>
-                {["Event", "Key", "Route", "Latency", "TTL", "ML"].map((h) => (
-                  <th key={h} className="px-4 py-2 text-left">
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {(recent_logs || []).map((log, i) => (
-                <tr key={i} className="border-t hover:bg-gray-50">
-                  <td className="px-4 py-2">
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded-full font-medium ${log.event_type === "HIT" ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}
-                    >
-                      {log.event_type}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2 font-mono text-xs max-w-xs truncate">
-                    {log.cache_key}
-                  </td>
-                  <td className="px-4 py-2 text-xs">{log.route_type}</td>
-                  <td className="px-4 py-2">{log.latency_ms}ms</td>
-                  <td className="px-4 py-2">{log.ttl_used}s</td>
-                  <td className="px-4 py-2">
-                    {log.ml_used ? (
-                      <span className="text-xs text-green-600 font-medium">
-                        ML
-                      </span>
-                    ) : (
-                      "—"
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
         </div>
       )}
 
       {/* ── RETRAINING ── */}
       {activeTab === "retraining" && (
         <div className="space-y-6">
-          {mlActionMsg && (
-            <div
-              className={`p-3 rounded text-sm ${mlActionMsg.type === "ok" ? "bg-green-50 text-green-800" : "bg-red-50 text-red-800"}`}
-            >
-              {mlActionMsg.text}
+          <div className="border rounded-lg overflow-hidden">
+            <div className="px-4 py-3 bg-gray-50 border-b">
+              <h2 className="font-semibold">Model Training History</h2>
             </div>
-          )}
-          <div className="border rounded-lg p-5">
-            <h2 className="font-semibold text-lg mb-1">Training Data</h2>
-            {mlReadiness && (
-              <div className="mt-3 space-y-2">
-                <div className="flex justify-between text-sm">
-                  <span>
-                    {mlReadiness.row_count?.toLocaleString()} /{" "}
-                    {mlReadiness.min_rows?.toLocaleString()} rows
-                  </span>
-                  <span
-                    className={
-                      mlReadiness.ready
-                        ? "text-green-600 font-medium"
-                        : "text-gray-500"
-                    }
-                  >
-                    {mlReadiness.ready
-                      ? "Ready to train"
-                      : `${mlReadiness.pct}% collected`}
-                  </span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div
-                    className={`h-2 rounded-full ${mlReadiness.ready ? "bg-green-500" : "bg-blue-500"}`}
-                    style={{ width: `${Math.min(mlReadiness.pct, 100)}%` }}
-                  />
-                </div>
-              </div>
-            )}
-            <div className="flex gap-3 mt-4">
-              <button
-                onClick={handleSimulate}
-                disabled={simulating}
-                className="px-4 py-2 border rounded text-sm disabled:opacity-50"
-              >
-                {simulating ? "Simulating…" : "Simulate from Real Data"}
-              </button>
-              <button
-                onClick={handleTriggerRetrain}
-                disabled={retraining || !mlReadiness?.ready}
-                className="px-4 py-2 bg-black text-white rounded text-sm disabled:opacity-50"
-              >
-                {retraining ? "Training…" : "Train Model Now"}
-              </button>
-            </div>
-          </div>
-
-          {retrainHistory?.history?.length > 0 && (
-            <div className="border rounded-lg overflow-hidden">
-              <div className="px-4 py-3 bg-gray-50 border-b">
-                <h2 className="font-semibold">
-                  Retrain History ({retrainHistory.total_retrains})
-                </h2>
-              </div>
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-xs uppercase text-gray-500">
-                  <tr>
-                    {["When", "Rows", "TTL MAE", "TTL R²"].map((h) => (
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+                <tr>
+                  {["Finished", "Samples", "Accuracy", "MAE", "Status"].map(
+                    (h) => (
                       <th key={h} className="px-4 py-2 text-left">
                         {h}
                       </th>
-                    ))}
+                    ),
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {retrainHistory?.history?.map((h, i) => (
+                  <tr key={i} className="border-t">
+                    <td className="px-4 py-2">
+                      {new Date(h.timestamp).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-2">{h.samples}</td>
+                    <td className="px-4 py-2">
+                      {(h.accuracy * 100).toFixed(1)}%
+                    </td>
+                    <td className="px-4 py-2">{h.mae?.toFixed(2)}s</td>
+                    <td className="px-4 py-2">
+                      <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full">
+                        Success
+                      </span>
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {[...retrainHistory.history]
-                    .reverse()
-                    .slice(0, 10)
-                    .map((h, i) => (
-                      <tr key={i} className="border-t">
-                        <td className="px-4 py-2 text-xs">
-                          {new Date(h.retrained_at).toLocaleString()}
-                        </td>
-                        <td className="px-4 py-2">
-                          {h.training_rows?.toLocaleString()}
-                        </td>
-                        <td className="px-4 py-2">{h.ttl_mae}s</td>
-                        <td className="px-4 py-2">{h.ttl_r2}</td>
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -1259,62 +1125,354 @@ const CacheDashboard = () => {
         <div className="space-y-6">
           {!modelMetrics ? (
             <div className="border rounded-lg p-8 text-center text-gray-400">
-              No model trained yet.
+              No model trained yet. Go to the Retraining tab to train the model.
             </div>
           ) : (
             <>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {[
-                  {
-                    label: "TTL MAE",
-                    value: `${modelMetrics.metrics?.ttl_mae}s`,
-                  },
-                  { label: "TTL R²", value: modelMetrics.metrics?.ttl_r2 },
-                  { label: "Evict R²", value: modelMetrics.metrics?.evict_r2 },
-                  { label: "Reuse F1", value: modelMetrics.metrics?.reuse_f1 },
-                ].map((m) => (
-                  <div key={m.label} className="border rounded-lg p-4">
-                    <p className="text-sm text-gray-500">{m.label}</p>
-                    <p className="text-2xl font-bold">{m.value}</p>
+              {/* Header */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="font-semibold text-lg">LightCache Models</h2>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {modelMetrics.trained_at
+                      ? `Trained ${new Date(modelMetrics.trained_at).toLocaleString()} · ${modelMetrics.training_rows?.toLocaleString()} rows`
+                      : "3 models working together for dynamic TTL, eviction, and prefetch decisions"}
+                  </p>
+                </div>
+              </div>
+
+              {/* 3 Model Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {/* Model 1 — TTL Regressor */}
+                <div className="border-2 border-blue-200 rounded-xl p-5 bg-blue-50/40">
+                  <div className="mb-4">
+                    <h3 className="font-bold text-blue-900">
+                      Model 1 — TTL Regressor
+                    </h3>
+                    <p className="text-xs text-blue-600 mt-0.5">
+                      LGBMRegressor · predicts optimal cache TTL (seconds)
+                    </p>
                   </div>
-                ))}
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-baseline">
+                      <div>
+                        <p className="text-sm font-medium text-gray-700">
+                          MAE (test set)
+                        </p>
+                        <p className="text-xs text-gray-400">
+                          Mean absolute error in TTL prediction
+                        </p>
+                      </div>
+                      <span
+                        className={`text-xl font-bold ${
+                          modelMetrics.metrics?.ttl_mae < 120
+                            ? "text-green-600"
+                            : modelMetrics.metrics?.ttl_mae < 200
+                              ? "text-yellow-600"
+                              : "text-orange-500"
+                        }`}
+                      >
+                        {modelMetrics.metrics?.ttl_mae != null
+                          ? `${modelMetrics.metrics.ttl_mae}s`
+                          : "—"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-baseline">
+                      <div>
+                        <p className="text-sm font-medium text-gray-700">
+                          R² Score
+                        </p>
+                        <p className="text-xs text-gray-400">
+                          Explained variance — 1.0 is perfect
+                        </p>
+                      </div>
+                      <span
+                        className={`text-xl font-bold ${
+                          modelMetrics.metrics?.ttl_r2 > 0.7
+                            ? "text-green-600"
+                            : modelMetrics.metrics?.ttl_r2 > 0.45
+                              ? "text-yellow-600"
+                              : "text-red-500"
+                        }`}
+                      >
+                        {modelMetrics.metrics?.ttl_r2 ?? "—"}
+                      </span>
+                    </div>
+                    {modelMetrics.metrics?.ttl_target_mean != null && (
+                      <div className="flex justify-between items-baseline">
+                        <div>
+                          <p className="text-sm font-medium text-gray-700">
+                            Target mean
+                          </p>
+                          <p className="text-xs text-gray-400">
+                            Avg observed TTL in training data
+                          </p>
+                        </div>
+                        <span className="text-xl font-bold text-gray-700">
+                          {modelMetrics.metrics.ttl_target_mean}s
+                        </span>
+                      </div>
+                    )}
+                    {modelMetrics.metrics?.ttl_target_std != null && (
+                      <div className="flex justify-between items-baseline">
+                        <div>
+                          <p className="text-sm font-medium text-gray-700">
+                            Target std
+                          </p>
+                          <p className="text-xs text-gray-400">
+                            Spread of TTL values
+                          </p>
+                        </div>
+                        <span className="text-xl font-bold text-gray-700">
+                          {modelMetrics.metrics.ttl_target_std}s
+                        </span>
+                      </div>
+                    )}
+                    {modelMetrics.train_rows != null && (
+                      <div className="pt-2 border-t border-blue-100 grid grid-cols-2 gap-2 text-xs text-gray-500">
+                        <div>
+                          <p className="font-medium text-gray-600">
+                            Train rows
+                          </p>
+                          <p className="text-sm font-bold text-gray-700">
+                            {modelMetrics.train_rows?.toLocaleString()}
+                          </p>
+                          <p className="text-gray-400">
+                            80% split used for training
+                          </p>
+                        </div>
+                        <div>
+                          <p className="font-medium text-gray-600">Test rows</p>
+                          <p className="text-sm font-bold text-gray-700">
+                            {modelMetrics.test_rows?.toLocaleString()}
+                          </p>
+                          <p className="text-gray-400">
+                            20% held-out for evaluation
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Model 2 — Eviction Score Regressor */}
+                <div className="border-2 border-purple-200 rounded-xl p-5 bg-purple-50/40">
+                  <div className="mb-4">
+                    <h3 className="font-bold text-purple-900">
+                      Model 2 — Eviction Score Regressor
+                    </h3>
+                    <p className="text-xs text-purple-600 mt-0.5">
+                      LGBMRegressor · predicts future demand score (0–200)
+                    </p>
+                  </div>
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-baseline">
+                      <div>
+                        <p className="text-sm font-medium text-gray-700">
+                          MAE (test set)
+                        </p>
+                        <p className="text-xs text-gray-400">
+                          Mean absolute error in eviction score
+                        </p>
+                      </div>
+                      <span
+                        className={`text-xl font-bold ${
+                          modelMetrics.metrics?.evict_mae < 8
+                            ? "text-green-600"
+                            : "text-yellow-600"
+                        }`}
+                      >
+                        {modelMetrics.metrics?.evict_mae ?? "—"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-baseline">
+                      <div>
+                        <p className="text-sm font-medium text-gray-700">
+                          R² Score
+                        </p>
+                        <p className="text-xs text-gray-400">
+                          Explained variance of demand scores
+                        </p>
+                      </div>
+                      <span
+                        className={`text-xl font-bold ${
+                          modelMetrics.metrics?.evict_r2 > 0.85
+                            ? "text-green-600"
+                            : modelMetrics.metrics?.evict_r2 > 0.6
+                              ? "text-yellow-600"
+                              : "text-red-500"
+                        }`}
+                      >
+                        {modelMetrics.metrics?.evict_r2 ?? "—"}
+                      </span>
+                    </div>
+                    {modelMetrics.metrics?.evict_score_mean != null && (
+                      <div className="flex justify-between items-baseline">
+                        <div>
+                          <p className="text-sm font-medium text-gray-700">
+                            Score mean
+                          </p>
+                          <p className="text-xs text-gray-400">
+                            Avg eviction score in training data
+                          </p>
+                        </div>
+                        <span className="text-xl font-bold text-gray-700">
+                          {modelMetrics.metrics.evict_score_mean}
+                        </span>
+                      </div>
+                    )}
+                    {modelMetrics.metrics?.evict_score_std != null && (
+                      <div className="flex justify-between items-baseline">
+                        <div>
+                          <p className="text-sm font-medium text-gray-700">
+                            Score std
+                          </p>
+                          <p className="text-xs text-gray-400">
+                            Spread of score values (0–200 scale)
+                          </p>
+                        </div>
+                        <span className="text-xl font-bold text-gray-700">
+                          {modelMetrics.metrics.evict_score_std}
+                        </span>
+                      </div>
+                    )}
+                    <div className="pt-2 border-t border-purple-100 space-y-1">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-gray-500">Score range</span>
+                        <span className="font-bold text-gray-700">0 – 200</span>
+                      </div>
+                      <div className="flex justify-between text-xs">
+                        <span className="text-gray-500">Eviction rule</span>
+                        <span className="font-bold text-gray-700">
+                          Min score evicted first
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Model 3 — Prefetch Classifier */}
+                <div className="border-2 border-green-200 rounded-xl p-5 bg-green-50/40">
+                  <div className="mb-4">
+                    <h3 className="font-bold text-green-900">
+                      Model 3 — Prefetch Classifier
+                    </h3>
+                    <p className="text-xs text-green-600 mt-0.5">
+                      Multi-output LGBMClassifier · predicts next route types
+                    </p>
+                  </div>
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-baseline">
+                      <div>
+                        <p className="text-sm font-medium text-gray-700">
+                          F1 Score (macro)
+                        </p>
+                        <p className="text-xs text-gray-400">
+                          Averaged F1 across all route labels
+                        </p>
+                      </div>
+                      <span
+                        className={`text-xl font-bold ${
+                          modelMetrics.metrics?.reuse_f1 > 0.8
+                            ? "text-green-600"
+                            : modelMetrics.metrics?.reuse_f1 > 0.75
+                              ? "text-yellow-600"
+                              : "text-red-500"
+                        }`}
+                      >
+                        {modelMetrics.metrics?.reuse_f1 ?? "—"}
+                      </span>
+                    </div>
+                    {modelMetrics.metrics?.reuse_auc != null && (
+                      <div className="flex justify-between items-baseline">
+                        <div>
+                          <p className="text-sm font-medium text-gray-700">
+                            AUC-ROC
+                          </p>
+                          <p className="text-xs text-gray-400">
+                            Area under ROC curve
+                          </p>
+                        </div>
+                        <span
+                          className={`text-xl font-bold ${
+                            modelMetrics.metrics.reuse_auc > 0.88
+                              ? "text-green-600"
+                              : "text-yellow-600"
+                          }`}
+                        >
+                          {modelMetrics.metrics.reuse_auc}
+                        </span>
+                      </div>
+                    )}
+                    <div className="pt-2 border-t border-green-100 space-y-2 text-xs">
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Output labels</span>
+                        <span className="font-bold text-gray-700">
+                          {modelMetrics.metrics?.prefetch_labels ?? 5}
+                        </span>
+                      </div>
+                      <p className="text-gray-400">
+                        One binary classifier per route type
+                      </p>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Classifier type</span>
+                        <span className="font-bold text-gray-700">
+                          MultiOutputClassifier
+                        </span>
+                      </div>
+                      <p className="text-gray-400">
+                        sklearn wrapper for multi-label
+                      </p>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Base estimator</span>
+                        <span className="font-bold text-gray-700">
+                          LGBMClassifier
+                        </span>
+                      </div>
+                      <p className="text-gray-400">
+                        LightGBM binary classification
+                      </p>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Prefetch strategy</span>
+                        <span className="font-bold text-gray-700">
+                          Top-3 routes
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Trigger</span>
+                        <span className="font-bold text-gray-700">
+                          On cache MISS
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4 text-sm">
-                <div className="border rounded-lg p-4">
-                  <p className="text-gray-500 text-xs">Trained at</p>
-                  <p className="font-medium">
-                    {new Date(modelMetrics.trained_at).toLocaleString()}
-                  </p>
-                </div>
-                <div className="border rounded-lg p-4">
-                  <p className="text-gray-500 text-xs">Training rows</p>
-                  <p className="font-medium">
-                    {modelMetrics.training_rows?.toLocaleString()}
-                  </p>
-                </div>
-              </div>
-
+              {/* Feature Importances */}
               {modelMetrics.feature_importances?.length > 0 && (
                 <div className="border rounded-lg overflow-hidden">
                   <div className="px-4 py-3 bg-gray-50 border-b">
                     <h2 className="font-semibold">
-                      Feature Importances (TTL model)
+                      Feature Importances — TTL Model
                     </h2>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Top features driving TTL prediction, by split gain
+                    </p>
                   </div>
                   <div className="p-4 space-y-2">
-                    {modelMetrics.feature_importances.slice(0, 10).map((f) => (
+                    {modelMetrics.feature_importances.slice(0, 12).map((f) => (
                       <div key={f.feature} className="flex items-center gap-3">
-                        <span className="text-xs font-mono w-48 text-right text-gray-600">
+                        <span className="text-xs font-mono w-52 text-right text-gray-500 shrink-0">
                           {f.feature}
                         </span>
-                        <div className="flex-1 bg-gray-200 rounded-full h-2">
+                        <div className="flex-1 bg-gray-100 rounded-full h-2">
                           <div
-                            className="bg-black h-2 rounded-full"
+                            className="bg-black h-2 rounded-full transition-all"
                             style={{ width: `${f.importance_pct}%` }}
                           />
                         </div>
-                        <span className="text-xs text-gray-500 w-10">
+                        <span className="text-xs text-gray-500 w-10 text-right shrink-0">
                           {f.importance_pct}%
                         </span>
                       </div>
@@ -1329,32 +1487,85 @@ const CacheDashboard = () => {
 
       {/* ── ML CONTROL ── */}
       {activeTab === "ml-control" && (
-        <div className="space-y-6">
-          {mlActionMsg && (
-            <div
-              className={`p-3 rounded text-sm ${mlActionMsg.type === "ok" ? "bg-green-50 text-green-800" : "bg-red-50 text-red-800"}`}
-            >
-              {mlActionMsg.text}
-            </div>
-          )}
-
+        <div className="space-y-6 max-w-2xl">
           <div className="border rounded-lg p-5">
-            <h2 className="font-semibold text-lg">System Mode</h2>
+            <h2 className="font-semibold text-lg">Operational Mode</h2>
             <p className="text-sm text-gray-500 mt-1">
-              Controls whether the ML service is consulted for TTL decisions.
+              Switch between standard fixed TTL and LightCache's dynamic ML
+              predictions.
             </p>
-            <div className="flex gap-4 mt-4">
+
+            <div className="mt-6 flex flex-col gap-3">
               <button
                 onClick={() => handleModeToggle("redis_only")}
-                className={`px-6 py-3 border-2 rounded-lg text-sm font-medium transition-colors ${mlMode === "redis_only" ? "bg-black text-white border-black" : "border-gray-300 hover:border-gray-400"}`}
+                className={`flex items-center justify-between p-4 border-2 rounded-xl transition-all ${
+                  mlMode === "redis_only"
+                    ? "border-black bg-gray-50"
+                    : "border-gray-200 hover:border-gray-300"
+                }`}
               >
-                Fixed TTL (Redis Only)
+                <div className="text-left">
+                  <p className="font-bold">Fixed TTL (Redis Only)</p>
+                  <p className="text-xs text-gray-500">
+                    Standard caching. Every key gets 3600s TTL.
+                  </p>
+                </div>
+                {mlMode === "redis_only" && (
+                  <div className="w-5 h-5 bg-black rounded-full flex items-center justify-center">
+                    <div className="w-2 h-2 bg-white rounded-full" />
+                  </div>
+                )}
               </button>
+
               <button
                 onClick={() => handleModeToggle("ml_active")}
-                className={`px-6 py-3 border-2 rounded-lg text-sm font-medium transition-colors ${mlMode === "ml_active" ? "bg-green-600 text-white border-green-600" : "border-gray-300 hover:border-green-300"}`}
+                className={`flex items-center justify-between p-4 border-2 rounded-xl transition-all ${
+                  mlMode === "ml_active"
+                    ? "border-green-600 bg-green-50"
+                    : "border-gray-200 hover:border-gray-300"
+                }`}
               >
-                LightCache ML Active
+                <div className="text-left">
+                  <p className="font-bold">LightCache ML Active</p>
+                  <p className="text-xs text-gray-500">
+                    Dynamic TTLs based on predicted re-access patterns.
+                  </p>
+                </div>
+                {mlMode === "ml_active" && (
+                  <div className="w-5 h-5 bg-green-600 rounded-full flex items-center justify-center">
+                    <div className="w-2 h-2 bg-white rounded-full" />
+                  </div>
+                )}
+              </button>
+            </div>
+            {mlActionMsg && (
+              <p
+                className={`mt-4 text-sm font-medium ${mlActionMsg.type === "ok" ? "text-green-600" : "text-red-500"}`}
+              >
+                {mlActionMsg.text}
+              </p>
+            )}
+          </div>
+
+          <div className="border rounded-lg p-5">
+            <h2 className="font-semibold">Model Training</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              Update the model using historical access logs.
+            </p>
+            <div className="mt-4 flex gap-2">
+              <button
+                onClick={handleTriggerRetrain}
+                disabled={retraining}
+                className="px-4 py-2 bg-black text-white rounded-lg text-sm disabled:opacity-50"
+              >
+                {retraining ? "Training…" : "Train Model Now"}
+              </button>
+              <button
+                onClick={handleSimulate}
+                disabled={simulating}
+                className="px-4 py-2 border rounded-lg text-sm hover:bg-gray-50 disabled:opacity-50"
+              >
+                {simulating ? "Simulating…" : "Generate Synthetic Data"}
               </button>
             </div>
           </div>
@@ -1362,22 +1573,22 @@ const CacheDashboard = () => {
           {mlReadiness && (
             <div className="border rounded-lg p-5">
               <h2 className="font-semibold">Model Status</h2>
-              <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
+              <div className="grid grid-cols-2 gap-4 mt-4">
                 {[
                   {
                     label: "Model exists",
-                    value: mlReadiness.model_exists ? "Yes ✓" : "No",
+                    value: mlReadiness.model_exists ? "Yes" : "No",
                     ok: mlReadiness.model_exists,
                   },
                   {
-                    label: "Model loaded",
-                    value: mlReadiness.model_ready ? "Yes ✓" : "No",
-                    ok: mlReadiness.model_ready,
+                    label: "Training rows",
+                    value: mlReadiness.total_rows?.toLocaleString(),
+                    ok: mlReadiness.total_rows > 100,
                   },
                   {
-                    label: "Data rows",
-                    value: `${mlReadiness.row_count?.toLocaleString()} / ${mlReadiness.min_rows?.toLocaleString()}`,
-                    ok: mlReadiness.ready,
+                    label: "Log coverage",
+                    value: mlReadiness.log_coverage,
+                    ok: true,
                   },
                   {
                     label: "Last trained",
