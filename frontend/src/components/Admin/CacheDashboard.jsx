@@ -333,7 +333,19 @@ const CacheDashboard = () => {
       return { border: "border-blue-400", badge: "bg-blue-100 text-blue-800" };
     if (name === "LRU")
       return { border: "border-gray-300", badge: "bg-gray-100 text-gray-700" };
-    return { border: "border-black", badge: "bg-black text-white" };
+    if (name === "RR")
+      return {
+        border: "border-yellow-400",
+        badge: "bg-yellow-100 text-yellow-800",
+      };
+    if (name === "FIFO")
+      return {
+        border: "border-orange-300",
+        badge: "bg-orange-100 text-orange-700",
+      };
+    if (name.includes("ML"))
+      return { border: "border-black", badge: "bg-black text-white" };
+    return { border: "border-gray-200", badge: "bg-gray-100 text-gray-600" };
   };
 
   // ── CHANGE 4: Update TABS array ──
@@ -603,6 +615,7 @@ const CacheDashboard = () => {
                           {s}
                         </th>
                       ))}
+                      <th className="px-4 py-2 text-left">ML vs RR Δ</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -610,6 +623,9 @@ const CacheDashboard = () => {
                       const row = benchmark.capacity_results[String(cap)];
                       const mbLabel =
                         benchmark.capacity_mb_labels?.[cap] || `${cap} keys`;
+                      const mlRate = row["ML (LightCache)"]?.hit_rate ?? 0;
+                      const rrRate = row["RR"]?.hit_rate ?? 0;
+                      const diff = (mlRate - rrRate).toFixed(2); // compare vs RR (base paper best)
                       return (
                         <tr key={cap} className="border-t hover:bg-gray-50">
                           <td className="px-4 py-2 font-medium">{mbLabel}</td>
@@ -621,6 +637,12 @@ const CacheDashboard = () => {
                               {row?.[s]?.hit_rate ?? "—"}%
                             </td>
                           ))}
+                          <td
+                            className={`px-4 py-2 font-medium ${parseFloat(diff) >= 0 ? "text-green-600" : "text-red-500"}`}
+                          >
+                            {parseFloat(diff) >= 0 ? "+" : ""}
+                            {diff}%
+                          </td>
                         </tr>
                       );
                     })}
@@ -1044,48 +1066,32 @@ const CacheDashboard = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {!recent_logs?.length ? (
-                    <tr>
-                      <td
-                        colSpan="6"
-                        className="px-4 py-8 text-center text-gray-400"
-                      >
-                        No log entries yet. Browse the store to generate cache
-                        activity.
+                  {recent_logs.map((log, i) => (
+                    <tr key={i} className="border-t hover:bg-gray-50">
+                      <td className="px-4 py-2 text-gray-400">
+                        {new Date(log.timestamp).toLocaleTimeString()}
+                      </td>
+                      <td className="px-4 py-2">
+                        <span className="text-xs border px-1.5 py-0.5 rounded">
+                          {log.mode}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2">
+                        <span
+                          className={`font-medium ${log.result === "hit" ? "text-green-600" : "text-red-500"}`}
+                        >
+                          {log.result.toUpperCase()}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2">{log.latency_ms}ms</td>
+                      <td className="px-4 py-2">
+                        {log.predicted_ttl ? `${log.predicted_ttl}s` : "—"}
+                      </td>
+                      <td className="px-4 py-2 font-mono text-xs truncate max-w-xs">
+                        {log.route}
                       </td>
                     </tr>
-                  ) : (
-                    recent_logs.map((log, i) => (
-                      <tr key={i} className="border-t hover:bg-gray-50">
-                        <td className="px-4 py-2 text-gray-400">
-                          {log.timestamp
-                            ? new Date(log.timestamp).toLocaleTimeString()
-                            : "—"}
-                        </td>
-                        <td className="px-4 py-2">
-                          <span className="text-xs border px-1.5 py-0.5 rounded">
-                            {log.mode ?? "—"}
-                          </span>
-                        </td>
-                        <td className="px-4 py-2">
-                          <span
-                            className={`font-medium ${log.result === "hit" ? "text-green-600" : "text-red-500"}`}
-                          >
-                            {log.result ? log.result.toUpperCase() : "—"}
-                          </span>
-                        </td>
-                        <td className="px-4 py-2">
-                          {log.latency_ms != null ? `${log.latency_ms}ms` : "—"}
-                        </td>
-                        <td className="px-4 py-2">
-                          {log.predicted_ttl ? `${log.predicted_ttl}s` : "—"}
-                        </td>
-                        <td className="px-4 py-2 font-mono text-xs truncate max-w-xs">
-                          {log.route ?? "—"}
-                        </td>
-                      </tr>
-                    ))
-                  )}
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -1113,42 +1119,23 @@ const CacheDashboard = () => {
                 </tr>
               </thead>
               <tbody>
-                {!retrainHistory?.history?.length ? (
-                  <tr>
-                    <td
-                      colSpan="5"
-                      className="px-4 py-8 text-center text-gray-400"
-                    >
-                      No training history yet. Click "Train Model Now" in the ML
-                      Control tab.
+                {retrainHistory?.history?.map((h, i) => (
+                  <tr key={i} className="border-t">
+                    <td className="px-4 py-2">
+                      {new Date(h.timestamp).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-2">{h.samples}</td>
+                    <td className="px-4 py-2">
+                      {(h.accuracy * 100).toFixed(1)}%
+                    </td>
+                    <td className="px-4 py-2">{h.mae?.toFixed(2)}s</td>
+                    <td className="px-4 py-2">
+                      <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full">
+                        Success
+                      </span>
                     </td>
                   </tr>
-                ) : (
-                  retrainHistory.history.map((h, i) => {
-                    const ts = h.timestamp ? new Date(h.timestamp) : null;
-                    const dateStr =
-                      ts && !isNaN(ts) ? ts.toLocaleString() : "—";
-                    const accuracy = parseFloat(h.accuracy);
-                    const accuracyStr = isNaN(accuracy)
-                      ? "—"
-                      : `${(accuracy * 100).toFixed(1)}%`;
-                    const mae = parseFloat(h.mae);
-                    const maeStr = isNaN(mae) ? "—" : `${mae.toFixed(2)}s`;
-                    return (
-                      <tr key={i} className="border-t">
-                        <td className="px-4 py-2">{dateStr}</td>
-                        <td className="px-4 py-2">{h.samples ?? "—"}</td>
-                        <td className="px-4 py-2">{accuracyStr}</td>
-                        <td className="px-4 py-2">{maeStr}</td>
-                        <td className="px-4 py-2">
-                          <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full">
-                            Success
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
+                ))}
               </tbody>
             </table>
           </div>
@@ -1170,38 +1157,21 @@ const CacheDashboard = () => {
                     Regression Errors (MAE)
                   </h3>
                   <div className="space-y-3">
-                    {Object.entries(modelMetrics.mae_by_route || {}).length ===
-                    0 ? (
-                      <p className="text-sm text-gray-400">
-                        No per-route MAE data available yet.
-                      </p>
-                    ) : (
-                      Object.entries(modelMetrics.mae_by_route || {}).map(
-                        ([route, mae]) => {
-                          const maeNum = parseFloat(mae);
-                          return (
-                            <div key={route}>
-                              <div className="flex justify-between text-xs mb-1">
-                                <span className="font-mono">{route}</span>
-                                <span>
-                                  {isNaN(maeNum)
-                                    ? "—"
-                                    : `${maeNum.toFixed(2)}s`}{" "}
-                                  error
-                                </span>
-                              </div>
-                              <div className="w-full bg-gray-100 h-2 rounded-full">
-                                <div
-                                  className="bg-blue-500 h-2 rounded-full"
-                                  style={{
-                                    width: `${Math.min(isNaN(maeNum) ? 0 : maeNum, 100)}%`,
-                                  }}
-                                />
-                              </div>
-                            </div>
-                          );
-                        },
-                      )
+                    {Object.entries(modelMetrics.mae_by_route || {}).map(
+                      ([route, mae]) => (
+                        <div key={route}>
+                          <div className="flex justify-between text-xs mb-1">
+                            <span className="font-mono">{route}</span>
+                            <span>{mae.toFixed(2)}s error</span>
+                          </div>
+                          <div className="w-full bg-gray-100 h-2 rounded-full">
+                            <div
+                              className="bg-blue-500 h-2 rounded-full"
+                              style={{ width: `${Math.min(mae, 100)}%` }}
+                            />
+                          </div>
+                        </div>
+                      ),
                     )}
                   </div>
                 </div>
@@ -1210,35 +1180,21 @@ const CacheDashboard = () => {
                   <h3 className="font-semibold mb-4">Feature Importance</h3>
                   <div className="space-y-4">
                     {Object.entries(modelMetrics.feature_importance || {})
-                      .length === 0 ? (
-                      <p className="text-sm text-gray-400">
-                        No feature importance data available yet.
-                      </p>
-                    ) : (
-                      Object.entries(modelMetrics.feature_importance || {})
-                        .sort((a, b) => b[1] - a[1])
-                        .map(([feature, weight]) => {
-                          const w = parseFloat(weight);
-                          return (
-                            <div key={feature}>
-                              <div className="flex justify-between text-xs mb-1">
-                                <span>{feature}</span>
-                                <span>
-                                  {isNaN(w) ? "—" : `${(w * 100).toFixed(1)}%`}
-                                </span>
-                              </div>
-                              <div className="w-full bg-gray-100 h-2 rounded-full">
-                                <div
-                                  className="bg-black h-2 rounded-full"
-                                  style={{
-                                    width: `${isNaN(w) ? 0 : w * 100}%`,
-                                  }}
-                                />
-                              </div>
-                            </div>
-                          );
-                        })
-                    )}
+                      .sort((a, b) => b[1] - a[1])
+                      .map(([feature, weight]) => (
+                        <div key={feature}>
+                          <div className="flex justify-between text-xs mb-1">
+                            <span>{feature}</span>
+                            <span>{(weight * 100).toFixed(1)}%</span>
+                          </div>
+                          <div className="w-full bg-gray-100 h-2 rounded-full">
+                            <div
+                              className="bg-black h-2 rounded-full"
+                              style={{ width: `${weight * 100}%` }}
+                            />
+                          </div>
+                        </div>
+                      ))}
                   </div>
                 </div>
               </div>
