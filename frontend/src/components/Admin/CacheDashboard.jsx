@@ -26,7 +26,6 @@ const CacheDashboard = () => {
   const [benchmarkRunning, setBenchmarkRunning] = useState(false);
   const [benchmarkMsg, setBenchmarkMsg] = useState(null);
 
-  // ── CHANGE 1: Add evaluation state ──
   const [evaluation, setEvaluation] = useState(null);
   const [snapshots, setSnapshots] = useState([]);
   const [snapshotLabel, setSnapshotLabel] = useState("");
@@ -86,7 +85,6 @@ const CacheDashboard = () => {
       setMlReadiness(modeRes.data.readiness || null);
       setModelMetrics(metricsRes?.data || null);
 
-      // ── CHANGE 2: Add evaluation data fetching ──
       authGet(`${BASE}/api/cache/snapshots`)
         .then((r) => setSnapshots(r.data?.snapshots || []))
         .catch(() => {});
@@ -171,7 +169,6 @@ const CacheDashboard = () => {
     }
   };
 
-  // ── CHANGE 3: Add snapshot handlers ──
   const handleSaveSnapshot = async () => {
     if (!snapshotLabel.trim()) {
       setSnapshotMsg({
@@ -308,12 +305,37 @@ const CacheDashboard = () => {
     }
   };
 
+  // ── Helper: safely format a date string ──
+  const formatDate = (val) => {
+    if (!val) return "—";
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? "—" : d.toLocaleString();
+  };
+
+  // ── Helper: safely format accuracy ──
+  const formatAccuracy = (val) => {
+    const num = parseFloat(val);
+    if (isNaN(num)) return "—";
+    // If already a percentage (> 1), show as-is; otherwise multiply
+    return num > 1 ? `${num.toFixed(1)}%` : `${(num * 100).toFixed(1)}%`;
+  };
+
+  // ── Helper: safely format MAE ──
+  const formatMae = (val) => {
+    const num = parseFloat(val);
+    if (isNaN(num)) return "—";
+    return `${num.toFixed(2)}s`;
+  };
+
   if (loading) return <div className="p-6">Loading...</div>;
   if (error) return <div className="p-6 text-red-500">{error}</div>;
 
   const { summary, by_route, by_hour, cached_keys, top_keys, recent_logs } =
     stats;
-  const maxHour = Math.max(...by_hour);
+
+  // FIX: guard against missing/empty recent_logs
+  const safeLogs = Array.isArray(recent_logs) ? recent_logs : [];
+  const maxHour = by_hour?.length ? Math.max(...by_hour) : 0;
 
   const CAPACITIES = benchmark?.capacity_results
     ? Object.keys(benchmark.capacity_results)
@@ -336,7 +358,6 @@ const CacheDashboard = () => {
     return { border: "border-black", badge: "bg-black text-white" };
   };
 
-  // ── CHANGE 4: Update TABS array ──
   const TABS = [
     { id: "overview", label: "Overview" },
     { id: "benchmark", label: "Benchmark" },
@@ -466,7 +487,7 @@ const CacheDashboard = () => {
                 </tr>
               </thead>
               <tbody>
-                {by_route.map((r) => (
+                {(by_route || []).map((r) => (
                   <tr key={r.route} className="border-t hover:bg-gray-50">
                     <td className="px-4 py-2 font-mono text-xs">{r.route}</td>
                     <td className="px-4 py-2 text-green-600 font-medium">
@@ -494,7 +515,7 @@ const CacheDashboard = () => {
           <div className="border rounded-lg p-4">
             <h2 className="font-semibold mb-3">Requests by Hour</h2>
             <div className="flex items-end gap-1 h-24">
-              {by_hour.map((count, hour) => (
+              {(by_hour || []).map((count, hour) => (
                 <div
                   key={hour}
                   className="flex-1 flex flex-col items-center gap-1"
@@ -559,7 +580,6 @@ const CacheDashboard = () => {
             </div>
           ) : (
             <>
-              {/* Summary cards at max capacity */}
               {summaryData && (
                 <div className="grid grid-cols-3 gap-4">
                   {Object.entries(summaryData).map(([name, data]) => {
@@ -587,7 +607,6 @@ const CacheDashboard = () => {
                 </div>
               )}
 
-              {/* Hit rate by capacity table */}
               <div className="border rounded-lg overflow-hidden">
                 <div className="px-4 py-3 bg-gray-50 border-b">
                   <h3 className="font-semibold text-sm">
@@ -628,7 +647,6 @@ const CacheDashboard = () => {
                 </table>
               </div>
 
-              {/* Base paper comparison */}
               {benchmark.chapter4_table_c && (
                 <div className="border rounded-lg p-4 bg-blue-50">
                   <h3 className="font-semibold text-blue-900 mb-2">
@@ -670,10 +688,9 @@ const CacheDashboard = () => {
         </div>
       )}
 
-      {/* ── CHANGE 4: Add EVALUATION panel ── */}
+      {/* ── EVALUATION ── */}
       {activeTab === "evaluation" && (
         <div className="space-y-6">
-          {/* ── Header ─────────────────────────────────────────────────────── */}
           <div className="border rounded-lg p-5 bg-gray-50">
             <h2 className="font-semibold text-lg">Chapter 4 Evaluation</h2>
             <p className="text-xs text-gray-500 mt-1 max-w-2xl">
@@ -684,7 +701,6 @@ const CacheDashboard = () => {
             </p>
           </div>
 
-          {/* ── Snapshot capture ───────────────────────────────────────────── */}
           <div className="border rounded-lg overflow-hidden">
             <div className="px-4 py-3 bg-gray-50 border-b">
               <h2 className="font-semibold">Save Evaluation Snapshot</h2>
@@ -735,7 +751,6 @@ const CacheDashboard = () => {
             </div>
           </div>
 
-          {/* ── Saved snapshots list ────────────────────────────────────────── */}
           {snapshots.length > 0 && (
             <div className="border rounded-lg overflow-hidden">
               <div className="px-4 py-3 bg-gray-50 border-b">
@@ -787,21 +802,19 @@ const CacheDashboard = () => {
                           </span>
                         </td>
                         <td className="px-4 py-2">
-                          {s.total_requests?.toLocaleString()}
+                          {s.total_requests?.toLocaleString() ?? "—"}
                         </td>
                         <td className="px-4 py-2">
                           <span
                             className={`font-bold ${s.hit_rate_pct >= 50 ? "text-green-600" : "text-yellow-600"}`}
                           >
-                            {s.hit_rate_pct}%
+                            {s.hit_rate_pct ?? "—"}%
                           </span>
                         </td>
-                        <td className="px-4 py-2">{s.avg_rt_ms}</td>
-                        <td className="px-4 py-2">{s.throughput_kbs}</td>
+                        <td className="px-4 py-2">{s.avg_rt_ms ?? "—"}</td>
+                        <td className="px-4 py-2">{s.throughput_kbs ?? "—"}</td>
                         <td className="px-4 py-2 text-xs text-gray-400">
-                          {s.captured_at
-                            ? new Date(s.captured_at).toLocaleString()
-                            : "—"}
+                          {formatDate(s.captured_at)}
                         </td>
                       </tr>
                     ))}
@@ -811,10 +824,8 @@ const CacheDashboard = () => {
             </div>
           )}
 
-          {/* ── Chapter 4 Tables ───────────────────────────────────────────── */}
           {exportData && (
             <>
-              {/* Table A — Response Time */}
               <div className="border rounded-lg overflow-hidden">
                 <div className="px-4 py-3 bg-blue-50 border-b border-blue-100">
                   <h2 className="font-semibold text-blue-900">
@@ -855,7 +866,8 @@ const CacheDashboard = () => {
                               {row.lightcache_rt_ms ?? "—"}
                             </td>
                             <td className="px-4 py-2">
-                              {row.rt_reduction_pct !== null ? (
+                              {row.rt_reduction_pct !== null &&
+                              row.rt_reduction_pct !== undefined ? (
                                 <span
                                   className={`font-bold ${row.rt_reduction_pct > 0 ? "text-green-600" : "text-red-500"}`}
                                 >
@@ -890,7 +902,6 @@ const CacheDashboard = () => {
                 )}
               </div>
 
-              {/* Table B — Throughput */}
               <div className="border rounded-lg overflow-hidden">
                 <div className="px-4 py-3 bg-purple-50 border-b border-purple-100">
                   <h2 className="font-semibold text-purple-900">
@@ -931,7 +942,8 @@ const CacheDashboard = () => {
                               {row.lightcache_th_kbs ?? "—"}
                             </td>
                             <td className="px-4 py-2">
-                              {row.th_increase_pct !== null ? (
+                              {row.th_increase_pct !== null &&
+                              row.th_increase_pct !== undefined ? (
                                 <span
                                   className={`font-bold ${row.th_increase_pct > 0 ? "text-green-600" : "text-red-500"}`}
                                 >
@@ -988,7 +1000,7 @@ const CacheDashboard = () => {
                 </tr>
               </thead>
               <tbody>
-                {cached_keys.map((k) => (
+                {(cached_keys || []).map((k) => (
                   <tr key={k.key} className="border-t hover:bg-gray-50">
                     <td className="px-4 py-2 font-mono text-xs">{k.key}</td>
                     <td className="px-4 py-2">{k.ttl}s</td>
@@ -1001,7 +1013,7 @@ const CacheDashboard = () => {
                     </td>
                   </tr>
                 ))}
-                {cached_keys.length === 0 && (
+                {(cached_keys || []).length === 0 && (
                   <tr>
                     <td
                       colSpan="3"
@@ -1017,7 +1029,7 @@ const CacheDashboard = () => {
         </div>
       )}
 
-      {/* ── LOGS ── */}
+      {/* ── LOGS ── FIX: use safeLogs with null guard */}
       {activeTab === "logs" && (
         <div className="space-y-6">
           <div className="border rounded-lg overflow-hidden">
@@ -1025,97 +1037,123 @@ const CacheDashboard = () => {
               <h2 className="font-semibold">Recent Activity</h2>
               <span className="text-xs text-gray-400">Last 50 events</span>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-xs uppercase text-gray-500">
-                  <tr>
-                    {[
-                      "Time",
-                      "Mode",
-                      "Result",
-                      "Latency",
-                      "Predicted TTL",
-                      "Route",
-                    ].map((h) => (
-                      <th key={h} className="px-4 py-2 text-left">
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {recent_logs.map((log, i) => (
-                    <tr key={i} className="border-t hover:bg-gray-50">
-                      <td className="px-4 py-2 text-gray-400">
-                        {new Date(log.timestamp).toLocaleTimeString()}
-                      </td>
-                      <td className="px-4 py-2">
-                        <span className="text-xs border px-1.5 py-0.5 rounded">
-                          {log.mode}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2">
-                        <span
-                          className={`font-medium ${log.result === "hit" ? "text-green-600" : "text-red-500"}`}
-                        >
-                          {log.result.toUpperCase()}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2">{log.latency_ms}ms</td>
-                      <td className="px-4 py-2">
-                        {log.predicted_ttl ? `${log.predicted_ttl}s` : "—"}
-                      </td>
-                      <td className="px-4 py-2 font-mono text-xs truncate max-w-xs">
-                        {log.route}
-                      </td>
+            {safeLogs.length === 0 ? (
+              <div className="px-4 py-8 text-center text-gray-400 text-sm">
+                No log entries found. Make some requests to the shop to generate
+                logs.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+                    <tr>
+                      {[
+                        "Time",
+                        "Mode",
+                        "Result",
+                        "Latency",
+                        "Predicted TTL",
+                        "Route",
+                      ].map((h) => (
+                        <th key={h} className="px-4 py-2 text-left">
+                          {h}
+                        </th>
+                      ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {safeLogs.map((log, i) => {
+                      const logTime = log.timestamp
+                        ? new Date(log.timestamp).toLocaleTimeString()
+                        : "—";
+                      const result = log.result ?? "";
+                      return (
+                        <tr key={i} className="border-t hover:bg-gray-50">
+                          <td className="px-4 py-2 text-gray-400">{logTime}</td>
+                          <td className="px-4 py-2">
+                            <span className="text-xs border px-1.5 py-0.5 rounded">
+                              {log.mode ?? "—"}
+                            </span>
+                          </td>
+                          <td className="px-4 py-2">
+                            <span
+                              className={`font-medium ${result === "hit" ? "text-green-600" : "text-red-500"}`}
+                            >
+                              {result ? result.toUpperCase() : "—"}
+                            </span>
+                          </td>
+                          <td className="px-4 py-2">
+                            {log.latency_ms != null
+                              ? `${log.latency_ms}ms`
+                              : "—"}
+                          </td>
+                          <td className="px-4 py-2">
+                            {log.predicted_ttl ? `${log.predicted_ttl}s` : "—"}
+                          </td>
+                          <td className="px-4 py-2 font-mono text-xs truncate max-w-xs">
+                            {log.route ?? "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* ── RETRAINING ── */}
+      {/* ── RETRAINING ── FIX: null-safe date, accuracy, and MAE */}
       {activeTab === "retraining" && (
         <div className="space-y-6">
           <div className="border rounded-lg overflow-hidden">
             <div className="px-4 py-3 bg-gray-50 border-b">
               <h2 className="font-semibold">Model Training History</h2>
             </div>
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-xs uppercase text-gray-500">
-                <tr>
-                  {["Finished", "Samples", "Accuracy", "MAE", "Status"].map(
-                    (h) => (
-                      <th key={h} className="px-4 py-2 text-left">
-                        {h}
-                      </th>
-                    ),
-                  )}
-                </tr>
-              </thead>
-              <tbody>
-                {retrainHistory?.history?.map((h, i) => (
-                  <tr key={i} className="border-t">
-                    <td className="px-4 py-2">
-                      {new Date(h.timestamp).toLocaleString()}
-                    </td>
-                    <td className="px-4 py-2">{h.samples}</td>
-                    <td className="px-4 py-2">
-                      {(h.accuracy * 100).toFixed(1)}%
-                    </td>
-                    <td className="px-4 py-2">{h.mae?.toFixed(2)}s</td>
-                    <td className="px-4 py-2">
-                      <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full">
-                        Success
-                      </span>
-                    </td>
+            {!retrainHistory?.history || retrainHistory.history.length === 0 ? (
+              <div className="px-4 py-8 text-center text-gray-400 text-sm">
+                No training history yet. Go to ML Control and click "Train Model
+                Now".
+              </div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+                  <tr>
+                    {["Finished", "Samples", "Accuracy", "MAE", "Status"].map(
+                      (h) => (
+                        <th key={h} className="px-4 py-2 text-left">
+                          {h}
+                        </th>
+                      ),
+                    )}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {retrainHistory.history.map((h, i) => (
+                    <tr key={i} className="border-t">
+                      {/* FIX: use formatDate helper */}
+                      <td className="px-4 py-2">{formatDate(h.timestamp)}</td>
+                      {/* FIX: show "—" when samples is null/undefined */}
+                      <td className="px-4 py-2">
+                        {h.samples != null ? h.samples.toLocaleString() : "—"}
+                      </td>
+                      {/* FIX: use formatAccuracy helper */}
+                      <td className="px-4 py-2">
+                        {formatAccuracy(h.accuracy)}
+                      </td>
+                      {/* FIX: use formatMae helper */}
+                      <td className="px-4 py-2">{formatMae(h.mae)}</td>
+                      <td className="px-4 py-2">
+                        <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full">
+                          Success
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
       )}
@@ -1129,7 +1167,6 @@ const CacheDashboard = () => {
             </div>
           ) : (
             <>
-              {/* Header */}
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="font-semibold text-lg">LightCache Models</h2>
@@ -1141,7 +1178,6 @@ const CacheDashboard = () => {
                 </div>
               </div>
 
-              {/* 3 Model Cards */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {/* Model 1 — TTL Regressor */}
                 <div className="border-2 border-blue-200 rounded-xl p-5 bg-blue-50/40">
@@ -1449,7 +1485,6 @@ const CacheDashboard = () => {
                 </div>
               </div>
 
-              {/* Feature Importances */}
               {modelMetrics.feature_importances?.length > 0 && (
                 <div className="border rounded-lg overflow-hidden">
                   <div className="px-4 py-3 bg-gray-50 border-b">
