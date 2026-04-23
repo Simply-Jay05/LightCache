@@ -333,7 +333,19 @@ const CacheDashboard = () => {
       return { border: "border-blue-400", badge: "bg-blue-100 text-blue-800" };
     if (name === "LRU")
       return { border: "border-gray-300", badge: "bg-gray-100 text-gray-700" };
-    return { border: "border-black", badge: "bg-black text-white" };
+    if (name === "RR")
+      return {
+        border: "border-yellow-400",
+        badge: "bg-yellow-100 text-yellow-800",
+      };
+    if (name === "FIFO")
+      return {
+        border: "border-orange-300",
+        badge: "bg-orange-100 text-orange-700",
+      };
+    if (name.includes("ML"))
+      return { border: "border-black", badge: "bg-black text-white" };
+    return { border: "border-gray-200", badge: "bg-gray-100 text-gray-600" };
   };
 
   // ── CHANGE 4: Update TABS array ──
@@ -603,6 +615,7 @@ const CacheDashboard = () => {
                           {s}
                         </th>
                       ))}
+                      <th className="px-4 py-2 text-left">ML vs RR Δ</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -610,6 +623,9 @@ const CacheDashboard = () => {
                       const row = benchmark.capacity_results[String(cap)];
                       const mbLabel =
                         benchmark.capacity_mb_labels?.[cap] || `${cap} keys`;
+                      const mlRate = row["ML (LightCache)"]?.hit_rate ?? 0;
+                      const rrRate = row["RR"]?.hit_rate ?? 0;
+                      const diff = (mlRate - rrRate).toFixed(2); // compare vs RR (base paper best)
                       return (
                         <tr key={cap} className="border-t hover:bg-gray-50">
                           <td className="px-4 py-2 font-medium">{mbLabel}</td>
@@ -621,6 +637,12 @@ const CacheDashboard = () => {
                               {row?.[s]?.hit_rate ?? "—"}%
                             </td>
                           ))}
+                          <td
+                            className={`px-4 py-2 font-medium ${parseFloat(diff) >= 0 ? "text-green-600" : "text-red-500"}`}
+                          >
+                            {parseFloat(diff) >= 0 ? "+" : ""}
+                            {diff}%
+                          </td>
                         </tr>
                       );
                     })}
