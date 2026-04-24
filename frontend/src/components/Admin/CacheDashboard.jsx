@@ -982,116 +982,334 @@ const CacheDashboard = () => {
         </div>
       )}
 
-      {/* ── KEYS ── */}
+      {/*  Keys  */}
       {activeTab === "keys" && (
         <div className="space-y-6">
           <div className="border rounded-lg overflow-hidden">
             <div className="px-4 py-3 bg-gray-50 border-b">
-              <h2 className="font-semibold">Currently Cached Keys</h2>
+              <h2 className="font-semibold">Most Accessed Cache Keys</h2>
             </div>
             <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+              <thead className="bg-gray-50 text-gray-500">
                 <tr>
-                  {["Key", "TTL Remaining", "Source Mode"].map((h) => (
-                    <th key={h} className="px-4 py-2 text-left">
-                      {h}
-                    </th>
-                  ))}
+                  {["Cache Key", "Total Requests", "Hits", "Hit Rate"].map(
+                    (h) => (
+                      <th key={h} className="px-4 py-2 text-left">
+                        {h}
+                      </th>
+                    ),
+                  )}
                 </tr>
               </thead>
               <tbody>
-                {(cached_keys || []).map((k) => (
-                  <tr key={k.key} className="border-t hover:bg-gray-50">
+                {top_keys.map((k) => (
+                  <tr key={k.key} className="border-t">
+                    <td className="px-4 py-2 font-mono text-xs truncate max-w-xs">
+                      {k.key}
+                    </td>
+                    <td className="px-4 py-2">{k.total}</td>
+                    <td className="px-4 py-2 text-green-600">{k.hits}</td>
+                    <td className="px-4 py-2">
+                      <div className="flex items-center gap-2">
+                        <div className="w-16 bg-gray-200 rounded-full h-1.5">
+                          <div
+                            className="bg-green-500 h-1.5 rounded-full"
+                            style={{ width: `${k.hit_rate}%` }}
+                          />
+                        </div>
+                        <span>{k.hit_rate}%</span>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="border rounded-lg overflow-hidden">
+            <div className="px-4 py-3 bg-gray-50 border-b">
+              <h2 className="font-semibold">Live Redis Keys with TTL</h2>
+              <p className="text-xs text-gray-500 mt-1">
+                Showing up to 50 keys
+              </p>
+            </div>
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-gray-500">
+                <tr>
+                  <th className="px-4 py-2 text-left">Key</th>
+                  <th className="px-4 py-2 text-left">TTL Remaining</th>
+                </tr>
+              </thead>
+              <tbody>
+                {cached_keys.map((k) => (
+                  <tr key={k.key} className="border-t">
                     <td className="px-4 py-2 font-mono text-xs">{k.key}</td>
-                    <td className="px-4 py-2">{k.ttl}s</td>
                     <td className="px-4 py-2">
                       <span
-                        className={`text-xs px-2 py-0.5 rounded-full ${k.mode === "ml" ? "bg-black text-white" : "bg-gray-100 text-gray-600"}`}
+                        className={
+                          k.ttl < 30 ? "text-red-500" : "text-gray-700"
+                        }
                       >
-                        {k.mode === "ml" ? "ML Prediction" : "Fixed Default"}
+                        {k.ttl}s
                       </span>
                     </td>
                   </tr>
                 ))}
-                {(cached_keys || []).length === 0 && (
-                  <tr>
-                    <td
-                      colSpan="3"
-                      className="px-4 py-8 text-center text-gray-400"
-                    >
-                      Cache is currently empty
-                    </td>
-                  </tr>
-                )}
               </tbody>
             </table>
           </div>
         </div>
       )}
 
-      {/* ── LOGS ── FIX: use safeLogs with null guard */}
+      {/* Logs */}
       {activeTab === "logs" && (
+        <div className="border rounded-lg overflow-hidden">
+          <div className="px-4 py-3 bg-gray-50 border-b">
+            <h2 className="font-semibold">Recent Cache Events</h2>
+            <p className="text-xs text-gray-500 mt-1">
+              Last 30 events, newest first
+            </p>
+          </div>
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 text-gray-500">
+              <tr>
+                {["Event", "Route", "Key", "TTL", "ML", "Latency", "Time"].map(
+                  (h) => (
+                    <th key={h} className="px-4 py-2 text-left">
+                      {h}
+                    </th>
+                  ),
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {recent_logs.map((log, i) => (
+                <tr key={i} className="border-t">
+                  <td className="px-4 py-2">
+                    <span
+                      className={`text-xs font-medium px-2 py-0.5 rounded-full ${log.event_type === "HIT" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}
+                    >
+                      {log.event_type}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2 text-xs text-gray-500">
+                    {log.route_type}
+                  </td>
+                  <td className="px-4 py-2 font-mono text-xs truncate max-w-[200px]">
+                    {log.cache_key}
+                  </td>
+                  <td className="px-4 py-2">{log.ttl_used}s</td>
+                  <td className="px-4 py-2">
+                    {log.ml_used ? (
+                      <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
+                        ML
+                      </span>
+                    ) : (
+                      <span className="text-xs text-gray-400">fixed</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2">{log.latency_ms}ms</td>
+                  <td className="px-4 py-2 text-xs text-gray-400">
+                    {log.timestamp
+                      ? new Date(log.timestamp).toLocaleTimeString()
+                      : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Retraining */}
+      {activeTab === "retraining" && (
         <div className="space-y-6">
+          {/* Summary cards - all 3 model metrics */}
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+            {[
+              {
+                label: "Last Trained",
+                value: retrainHistory?.latest?.retrained_at
+                  ? new Date(
+                      retrainHistory.latest.retrained_at,
+                    ).toLocaleDateString()
+                  : "—",
+                sub: retrainHistory?.latest?.retrained_at
+                  ? new Date(
+                      retrainHistory.latest.retrained_at,
+                    ).toLocaleTimeString()
+                  : "Initial model",
+              },
+              {
+                label: "Total Retrains",
+                value: retrainHistory?.total_retrains ?? 0,
+                sub: "runs",
+              },
+              {
+                label: "TTL MAE",
+                value:
+                  retrainHistory?.latest?.ttl_mae != null
+                    ? `${retrainHistory.latest.ttl_mae}s`
+                    : "—",
+                sub: "lower is better",
+              },
+              {
+                label: "TTL R²",
+                value: retrainHistory?.latest?.ttl_r2 ?? "—",
+                sub: "target 0.3 – 0.6",
+                color:
+                  retrainHistory?.latest?.ttl_r2 != null
+                    ? parseFloat(retrainHistory.latest.ttl_r2) >= 0.3
+                      ? "text-green-600"
+                      : "text-yellow-600"
+                    : "",
+              },
+              {
+                label: "Eviction MAE",
+                value: retrainHistory?.latest?.evict_mae ?? "—",
+                sub: "score units",
+              },
+              {
+                label: "Prefetch F1",
+                value: retrainHistory?.latest?.prefetch_f1 ?? "—",
+                sub: "macro, target 0.5+",
+                color:
+                  retrainHistory?.latest?.prefetch_f1 != null
+                    ? parseFloat(retrainHistory.latest.prefetch_f1) >= 0.5
+                      ? "text-green-600"
+                      : "text-yellow-600"
+                    : "",
+              },
+            ].map((card) => (
+              <div key={card.label} className="p-4 border rounded-lg">
+                <p className="text-xs text-gray-500">{card.label}</p>
+                <p className={`text-lg font-bold mt-1 ${card.color || ""}`}>
+                  {card.value}
+                </p>
+                {card.sub && (
+                  <p className="text-xs text-gray-400 mt-0.5">{card.sub}</p>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Full history table */}
           <div className="border rounded-lg overflow-hidden">
-            <div className="px-4 py-3 bg-gray-50 border-b flex justify-between items-center">
-              <h2 className="font-semibold">Recent Activity</h2>
-              <span className="text-xs text-gray-400">Last 50 events</span>
+            <div className="px-4 py-3 bg-gray-50 border-b">
+              <h2 className="font-semibold">Retraining History</h2>
+              <p className="text-xs text-gray-500 mt-1">
+                Retrains every <span className="font-medium">3 days</span> on a{" "}
+                <span className="font-medium">30-day rolling window</span>. All
+                models evaluated on a 20% held-out test split.
+              </p>
             </div>
-            {safeLogs.length === 0 ? (
+            {!retrainHistory || retrainHistory.history.length === 0 ? (
               <div className="px-4 py-8 text-center text-gray-400 text-sm">
-                No log entries found. Make some requests to the shop to generate
-                logs.
+                No retraining history yet. First retrain runs automatically
+                after 3 days or 1,000+ rows are collected. Use "Train now" in ML
+                Control to trigger manually.
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
-                  <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+                  <thead className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide">
                     <tr>
                       {[
-                        "Time",
-                        "Mode",
-                        "Result",
-                        "Latency",
-                        "Predicted TTL",
-                        "Route",
+                        "Date",
+                        "Rows",
+                        "Window",
+                        "TTL MAE ↓",
+                        "TTL R² ↑",
+                        "Evict MAE ↓",
+                        "Evict R² ↑",
+                        "Prefetch F1 ↑",
+                        "Duration",
+                        "Hot Reload",
                       ].map((h) => (
-                        <th key={h} className="px-4 py-2 text-left">
+                        <th
+                          key={h}
+                          className="px-4 py-2 text-left whitespace-nowrap"
+                        >
                           {h}
                         </th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {safeLogs.map((log, i) => {
-                      const logTime = log.timestamp
-                        ? new Date(log.timestamp).toLocaleTimeString()
-                        : "—";
-                      const result = log.result ?? "";
+                    {[...retrainHistory.history].reverse().map((entry, i) => {
+                      const ttlR2 = parseFloat(entry.ttl_r2);
+                      const evictR2 = parseFloat(entry.evict_r2);
+                      const prefF1 = parseFloat(entry.prefetch_f1);
                       return (
                         <tr key={i} className="border-t hover:bg-gray-50">
-                          <td className="px-4 py-2 text-gray-400">{logTime}</td>
+                          <td className="px-4 py-2 text-xs whitespace-nowrap">
+                            {new Date(entry.retrained_at).toLocaleString()}
+                          </td>
                           <td className="px-4 py-2">
-                            <span className="text-xs border px-1.5 py-0.5 rounded">
-                              {log.mode ?? "—"}
+                            {entry.training_rows?.toLocaleString() ?? "—"}
+                          </td>
+                          <td className="px-4 py-2 text-gray-500">
+                            {entry.window_days ?? "—"}d
+                          </td>
+                          <td className="px-4 py-2 font-medium">
+                            {entry.ttl_mae != null ? `${entry.ttl_mae}s` : "—"}
+                          </td>
+                          <td className="px-4 py-2">
+                            <span
+                              className={
+                                !isNaN(ttlR2)
+                                  ? ttlR2 >= 0.3
+                                    ? "text-green-600 font-medium"
+                                    : "text-yellow-600"
+                                  : ""
+                              }
+                            >
+                              {entry.ttl_r2 ?? "—"}
+                            </span>
+                          </td>
+                          <td className="px-4 py-2 font-medium">
+                            {entry.evict_mae ?? "—"}
+                          </td>
+                          <td className="px-4 py-2">
+                            <span
+                              className={
+                                !isNaN(evictR2)
+                                  ? evictR2 >= 0.4
+                                    ? "text-green-600 font-medium"
+                                    : "text-yellow-600"
+                                  : ""
+                              }
+                            >
+                              {entry.evict_r2 ?? "—"}
                             </span>
                           </td>
                           <td className="px-4 py-2">
                             <span
-                              className={`font-medium ${result === "hit" ? "text-green-600" : "text-red-500"}`}
+                              className={
+                                !isNaN(prefF1)
+                                  ? prefF1 >= 0.5
+                                    ? "text-green-600 font-medium"
+                                    : "text-yellow-600"
+                                  : ""
+                              }
                             >
-                              {result ? result.toUpperCase() : "—"}
+                              {entry.prefetch_f1 ?? "—"}
                             </span>
                           </td>
-                          <td className="px-4 py-2">
-                            {log.latency_ms != null
-                              ? `${log.latency_ms}ms`
+                          <td className="px-4 py-2 text-gray-500">
+                            {entry.elapsed_seconds != null
+                              ? `${entry.elapsed_seconds}s`
                               : "—"}
                           </td>
                           <td className="px-4 py-2">
-                            {log.predicted_ttl ? `${log.predicted_ttl}s` : "—"}
-                          </td>
-                          <td className="px-4 py-2 font-mono text-xs truncate max-w-xs">
-                            {log.route ?? "—"}
+                            {entry.hot_reloaded ? (
+                              <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
+                                ✓ Live
+                              </span>
+                            ) : (
+                              <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">
+                                — No
+                              </span>
+                            )}
                           </td>
                         </tr>
                       );
@@ -1101,59 +1319,71 @@ const CacheDashboard = () => {
               </div>
             )}
           </div>
-        </div>
-      )}
 
-      {/* ── RETRAINING ── FIX: null-safe date, accuracy, and MAE */}
-      {activeTab === "retraining" && (
-        <div className="space-y-6">
+          {/* Metric guide */}
           <div className="border rounded-lg overflow-hidden">
             <div className="px-4 py-3 bg-gray-50 border-b">
-              <h2 className="font-semibold">Model Training History</h2>
+              <h2 className="font-semibold text-sm">
+                Metric Interpretation Guide
+              </h2>
             </div>
-            {!retrainHistory?.history || retrainHistory.history.length === 0 ? (
-              <div className="px-4 py-8 text-center text-gray-400 text-sm">
-                No training history yet. Go to ML Control and click "Train Model
-                Now".
-              </div>
-            ) : (
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-xs uppercase text-gray-500">
-                  <tr>
-                    {["Finished", "Samples", "Accuracy", "MAE", "Status"].map(
-                      (h) => (
-                        <th key={h} className="px-4 py-2 text-left">
-                          {h}
-                        </th>
-                      ),
-                    )}
-                  </tr>
-                </thead>
-                <tbody>
-                  {retrainHistory.history.map((h, i) => (
-                    <tr key={i} className="border-t">
-                      {/* FIX: use formatDate helper */}
-                      <td className="px-4 py-2">{formatDate(h.timestamp)}</td>
-                      {/* FIX: show "—" when samples is null/undefined */}
-                      <td className="px-4 py-2">
-                        {h.samples != null ? h.samples.toLocaleString() : "—"}
-                      </td>
-                      {/* FIX: use formatAccuracy helper */}
-                      <td className="px-4 py-2">
-                        {formatAccuracy(h.accuracy)}
-                      </td>
-                      {/* FIX: use formatMae helper */}
-                      <td className="px-4 py-2">{formatMae(h.mae)}</td>
-                      <td className="px-4 py-2">
-                        <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full">
-                          Success
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+            <div className="divide-y text-sm">
+              {[
+                {
+                  metric: "TTL MAE",
+                  range:
+                    "Average error in TTL prediction (seconds). Lower is better.",
+                  good: "< 60s",
+                  ok: "60–120s",
+                  bad: "> 120s",
+                },
+                {
+                  metric: "TTL R²",
+                  range:
+                    "Explained variance of TTL predictions. ≥ 0.3 indicates genuine signal.",
+                  good: "≥ 0.4",
+                  ok: "0.3–0.39",
+                  bad: "< 0.3",
+                },
+                {
+                  metric: "Eviction R²",
+                  range:
+                    "Accuracy of future-demand score. Higher = smarter eviction decisions.",
+                  good: "≥ 0.5",
+                  ok: "0.4–0.49",
+                  bad: "< 0.4",
+                },
+                {
+                  metric: "Prefetch F1",
+                  range:
+                    "Macro-averaged F1 across route types for prefetch prediction quality.",
+                  good: "≥ 0.6",
+                  ok: "0.5–0.59",
+                  bad: "< 0.5",
+                },
+              ].map(({ metric, range, good, ok, bad }) => (
+                <div
+                  key={metric}
+                  className="px-4 py-3 grid grid-cols-1 md:grid-cols-4 gap-2 items-start"
+                >
+                  <div className="font-medium text-gray-800">{metric}</div>
+                  <div className="md:col-span-2 text-gray-500 text-xs leading-relaxed">
+                    {range}
+                  </div>
+                  <div className="flex gap-1 flex-wrap text-xs">
+                    <span className="bg-green-50 text-green-700 border border-green-200 px-2 py-0.5 rounded">
+                      Good: {good}
+                    </span>
+                    <span className="bg-yellow-50 text-yellow-700 border border-yellow-200 px-2 py-0.5 rounded">
+                      OK: {ok}
+                    </span>
+                    <span className="bg-red-50 text-red-600 border border-red-200 px-2 py-0.5 rounded">
+                      Weak: {bad}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
