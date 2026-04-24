@@ -2,6 +2,7 @@ const { cacheGet, cacheSet, logCacheEvent } = require("../config/redis");
 const {
   getPrediction,
   updateKeyStats,
+  getKeyStats,
   keyStats,
 } = require("../config/mlClient");
 const { getClient } = require("../config/redis");
@@ -15,7 +16,7 @@ const DEFAULT_TTLS = {
   similar_products: 600,
 };
 
-// Minimum TTL floor for real user browsing
+// Minimum TTL floor — prevents pathologically short TTLs in production
 const MIN_TTLS = {
   products_list: 120,
   product_single: 180,
@@ -35,45 +36,29 @@ const ROUTE_KEY_PREFIX = {
 const ITEM_ID_ROUTES = new Set(["product_single", "similar_products"]);
 const SINGLETON_ROUTES = new Set(["best_seller", "new_arrivals"]);
 
-const ML_SERVICE_URL = process.env.ML_SERVICE_URL || "http://localhost:8000";
+const TTL_MIN = 30;
+const TTL_MAX = 1800;
 
-// ML-driven eviction tracking
-// In-memory map: cacheKey → { evictionScore, ttlSeconds, lastAccessMs }
-// Updated on every MISS (insertion) and HIT (score refresh).
-// Used by smartEvict() to pick the best candidate to drop from Redis.
-const evictionMeta = new Map();
-
-// Called on cache MISS: registers a new key with its ML eviction metadata.
-
-const registerForEviction = (cacheKey, evictionScore, ttlSeconds) => {
-  evictionMeta.set(cacheKey, {
-    evictionScore,
-    ttlSeconds,
-    lastAccessMs: Date.now(),
-  });
-};
-
-/**
- * Called on cache HIT: refreshes last access time AND eviction score.
- * This mirrors what LRU does implicitly (recency refresh) but backed
- * by the ML demand signal.
- */
-const refreshEvictionMeta = (cacheKey, newScore) => {
-  const existing = evictionMeta.get(cacheKey);
-  if (existing) {
-    existing.lastAccessMs = Date.now();
-    existing.evictionScore = newScore ?? existing.evictionScore;
+function intervalAnchoredTtl(mlTtl, intervalMeanSecs, accessCount, minTtl) {
+  // Only anchor to interval after first access — first access has no interval data
+  if (accessCount > 1 && intervalMeanSecs > 0) {
+    const ivTtl = Math.min(Math.round(intervalMeanSecs * 1.3), TTL_MAX);
+    // Take the larger: model prediction or interval anchor
+    const anchored = Math.max(mlTtl, ivTtl);
+    return Math.max(minTtl, Math.min(anchored, TTL_MAX));
   }
-};
+  return Math.max(minTtl, Math.min(mlTtl, TTL_MAX));
+}
 
-/**
- * Composite eviction score — same formula as benchmark.py _evict():
- *   ML_score × recency_decay × ttl_remaining_ratio
- *
- * Lower score = better eviction candidate.
- * Computed locally (no HTTP call) for speed.
- */
-const compositeEvictionScore = (meta, nowMs) => {
+//  Composite eviction score
+
+//  Lower score = better eviction candidate (should be dropped first).
+//  Combines three signals:
+//  1. ML eviction score (0–200): model's demand prediction
+//  2. Recency decay: exp(-age / half_life) where half_life = 40% of key TTL
+//  3. TTL remaining ratio: avoid evicting keys about to expire naturally
+
+function compositeEvictionScore(meta, nowMs) {
   const { evictionScore, ttlSeconds, lastAccessMs } = meta;
   const halfLifeMs = Math.max(30_000, ttlSeconds * 1000 * 0.4);
   const ageMs = Math.max(0, nowMs - lastAccessMs);
@@ -82,43 +67,57 @@ const compositeEvictionScore = (meta, nowMs) => {
   const ttlRemMs = Math.max(0, expireMs - nowMs);
   const ttlRemRatio = ttlRemMs / Math.max(ttlSeconds * 1000, 1);
   return evictionScore * recency * (0.3 + 0.7 * ttlRemRatio);
-};
+}
 
-/**
- * ML-driven eviction: scans evictionMeta, calls Redis to verify the key
- * still exists, then deletes the one with the lowest composite score.
- *
- * Call this proactively when you want to trim the cache — e.g. if you
- * track a soft cap on cached keys and want to enforce it.
- *
- * @param {number} targetCount - evict until evictionMeta.size <= targetCount
- */
-const smartEvict = async (targetCount = 0) => {
+// In-memory eviction metadata store
+// Tracks evictionScore, ttlSeconds, lastAccessMs for every ML-cached key.
+// Used by smartEvict() and TTL refresh on hit.
+// Map: cacheKey → { evictionScore, ttlSeconds, lastAccessMs }
+const evictionMeta = new Map();
+
+function registerForEviction(cacheKey, evictionScore, ttlSeconds) {
+  evictionMeta.set(cacheKey, {
+    evictionScore,
+    ttlSeconds,
+    lastAccessMs: Date.now(),
+  });
+}
+
+function refreshEvictionMeta(cacheKey, newScore) {
+  const existing = evictionMeta.get(cacheKey);
+  if (existing) {
+    existing.lastAccessMs = Date.now();
+    if (newScore != null) existing.evictionScore = newScore;
+  }
+}
+
+// Smart eviction — evict keys with lowest composite score until
+// evictionMeta.size <= targetCount. Call this proactively to enforce
+// a soft cap on cached keys using ML demand awareness instead of
+// Redis's default LRU.
+// @param {number} targetCount - evict until this many keys remain
+
+async function smartEvict(targetCount = 0) {
   const client = getClient();
   if (!client || evictionMeta.size === 0) return;
 
   const nowMs = Date.now();
-
-  // Score all tracked keys
   const scored = [];
   for (const [key, meta] of evictionMeta.entries()) {
     scored.push({ key, score: compositeEvictionScore(meta, nowMs) });
   }
-
-  // Sort ascending — lowest score = best eviction candidate
-  scored.sort((a, b) => a.score - b.score);
+  scored.sort((a, b) => a.score - b.score); // ascending — lowest first
 
   let evicted = 0;
-  for (const { key } of scored) {
+  for (const { key, score } of scored) {
     if (evictionMeta.size <= targetCount) break;
     try {
-      // Verify key still exists in Redis before evicting
       const exists = await client.exists(key);
       if (exists) {
         await client.del(key);
         await client.del(`meta:${key}`);
         console.log(
-          `🗑️  SMART EVICT [ML] ${key} (score: ${scored.find((s) => s.key === key)?.score?.toFixed(2)})`,
+          `🗑️  SMART EVICT [composite score: ${score.toFixed(2)}] ${key}`,
         );
       }
       evictionMeta.delete(key);
@@ -127,20 +126,17 @@ const smartEvict = async (targetCount = 0) => {
       console.warn(`Smart evict failed for ${key}: ${err.message}`);
     }
   }
-
   if (evicted > 0) {
     console.log(`🗑️  SMART EVICT complete — removed ${evicted} keys`);
   }
-};
+}
 
 // Prefetch helpers
 const resolveTopCandidates = (routeType, n = 3) => {
   const prefix = ROUTE_KEY_PREFIX[routeType];
   if (!prefix) return [];
-
-  if (SINGLETON_ROUTES.has(routeType)) {
+  if (SINGLETON_ROUTES.has(routeType))
     return [{ cacheKey: prefix, itemId: null }];
-  }
 
   const candidates = [];
   for (const [key, stats] of keyStats.entries()) {
@@ -151,7 +147,6 @@ const resolveTopCandidates = (routeType, n = 3) => {
       candidates.push({ cacheKey: key, itemId, total: stats.total });
     }
   }
-
   return candidates
     .sort((a, b) => b.total - a.total)
     .slice(0, n)
@@ -160,24 +155,15 @@ const resolveTopCandidates = (routeType, n = 3) => {
 
 const warmPrefetchCandidates = async (candidates, routeType, ttl) => {
   const Product = require("../models/Product");
-
   for (const { cacheKey, itemId } of candidates) {
     try {
       const existing = await cacheGet(cacheKey);
-      if (existing !== null) {
-        console.log(
-          `⚡ PREFETCH SKIP [${routeType}] ${cacheKey} (already warm)`,
-        );
-        continue;
-      }
-
+      if (existing !== null) continue;
       let data = null;
-
       switch (routeType) {
         case "product_single":
           if (itemId) data = await Product.findById(itemId).lean();
           break;
-
         case "similar_products":
           if (itemId) {
             const product = await Product.findById(itemId).lean();
@@ -192,15 +178,12 @@ const warmPrefetchCandidates = async (candidates, routeType, ttl) => {
             }
           }
           break;
-
         case "best_seller":
           data = await Product.findOne().sort({ rating: -1 }).lean();
           break;
-
         case "new_arrivals":
           data = await Product.find().sort({ createdAt: -1 }).limit(8).lean();
           break;
-
         case "products_list": {
           const prefix = ROUTE_KEY_PREFIX.products_list;
           const qs = cacheKey.slice(prefix.length);
@@ -219,11 +202,9 @@ const warmPrefetchCandidates = async (candidates, routeType, ttl) => {
             .lean();
           break;
         }
-
         default:
           continue;
       }
-
       if (data) {
         await cacheSet(cacheKey, data, ttl);
         console.log(`⚡ PREFETCH WARM [${routeType}] ${cacheKey} TTL:${ttl}s`);
@@ -272,14 +253,14 @@ const getPriceTier = (req) => {
   return "premium";
 };
 
-// Meta storage in Redis (for HIT recovery of ML metadata)
+// Redis meta helpers
 const setKeyMeta = async (cacheKey, ttl, mlUsed, rawTtl, evictionScore) => {
   const client = getClient();
   if (!client) return;
   try {
     await client.setEx(
       `meta:${cacheKey}`,
-      ttl,
+      ttl + 60, // slightly longer than the data key so meta outlasts it
       JSON.stringify({
         ml_used: mlUsed,
         ttl_used: ttl,
@@ -300,6 +281,27 @@ const getKeyMeta = async (cacheKey) => {
     return val ? JSON.parse(val) : null;
   } catch {
     return null;
+  }
+};
+
+// TTL refresh on HIT
+
+// Mirrors benchmark MLCache.get() TTL refresh:
+// self.cache[key] = now_ms + self.ttls.get(key, 300) * 1000
+
+// Resets the Redis TTL of a cached key to its original ML-predicted TTL.
+// Without this, a popular key inserted with TTL=800s expires 800s after
+// the first access regardless of how many subsequent hits it receives.
+//  With refresh, every hit resets the countdown — the key stays alive
+//  as long as it keeps being accessed.
+
+const refreshKeyTtl = async (cacheKey, ttlSeconds) => {
+  const client = getClient();
+  if (!client || !ttlSeconds) return;
+  try {
+    await client.expire(cacheKey, ttlSeconds);
+  } catch {
+    /* non-critical */
   }
 };
 
@@ -324,18 +326,16 @@ const cacheMiddleware = (type) => {
       const mlUsed = meta?.ml_used ?? false;
       const ttlUsed = meta?.ttl_used ?? fallbackTtl;
 
-      // Score refresh on HIT
-      // Re-score the key so that evictionMeta reflects current access patterns.
-      // Without this, a key accessed 50 times still has its stale insertion score.
-      // This is the same mechanism that gives LRU its recency advantage — we
-      // replicate it while also updating the ML demand estimate.
       if (mlUsed) {
-        // Get a fresh prediction with updated hit stats for this key
-        const stats = keyStats.get(cacheKey);
-        const accessCnt = stats?.total ?? 1;
-        const hitCnt = stats?.hits ?? 0;
-        const hitRate = accessCnt > 0 ? hitCnt / accessCnt : 0.5;
+        // BENCHMARK STRATEGY 2: TTL refresh on hit
+        // Extend the key's Redis TTL back to its original predicted value.
+        // A key accessed 20 times should stay alive 20× longer than one
+        // accessed once — this is what the benchmark MLCache does implicitly.
+        await refreshKeyTtl(cacheKey, ttlUsed);
+        refreshEvictionMeta(cacheKey, meta?.eviction_score ?? null);
 
+        // Fire background score refresh — non-blocking, never delays response
+        const stats = getKeyStats(cacheKey);
         getPrediction({
           route_type: type,
           page_type: pageType,
@@ -345,21 +345,18 @@ const cacheMiddleware = (type) => {
           latency_ms: latency,
           is_hit: true,
           price_tier: priceTier,
-          key_access_count: accessCnt,
-          key_hit_rate: hitRate,
+          key_access_count: stats.key_access_count,
+          key_hit_rate: stats.key_hit_rate,
+          time_since_last_request: stats.time_since_last_request,
+          request_interval_mean: stats.request_interval_mean,
+          request_interval_std: stats.request_interval_std,
         })
           .then((freshPred) => {
             if (freshPred?.eviction_score != null) {
               refreshEvictionMeta(cacheKey, freshPred.eviction_score);
-            } else {
-              // No fresh prediction — at least refresh the access timestamp
-              refreshEvictionMeta(cacheKey, null);
             }
           })
-          .catch(() => {
-            // Non-critical — never block the HIT response
-            refreshEvictionMeta(cacheKey, null);
-          });
+          .catch(() => {});
       }
 
       await logCacheEvent({
@@ -374,6 +371,7 @@ const cacheMiddleware = (type) => {
         hour_of_day: new Date().getHours().toString(),
         weekday: new Date().getDay().toString(),
         ml_used: mlUsed.toString(),
+        is_hit: "1",
       });
 
       console.log(
@@ -394,10 +392,7 @@ const cacheMiddleware = (type) => {
       let evictScore = null;
       let rawMlTtl = null;
 
-      const stats = keyStats.get(cacheKey);
-      const accessCnt = stats?.total ?? 1;
-      const hitCnt = stats?.hits ?? 0;
-      const hitRate = accessCnt > 0 ? hitCnt / accessCnt : 0.5;
+      const stats = getKeyStats(cacheKey);
 
       const prediction = await getPrediction({
         route_type: type,
@@ -408,22 +403,44 @@ const cacheMiddleware = (type) => {
         latency_ms: latency,
         is_hit: false,
         price_tier: priceTier,
-        key_access_count: accessCnt,
-        key_hit_rate: hitRate,
+        key_access_count: stats.key_access_count,
+        key_hit_rate: stats.key_hit_rate,
+        time_since_last_request: stats.time_since_last_request,
+        request_interval_mean: stats.request_interval_mean,
+        request_interval_std: stats.request_interval_std,
       });
 
       if (prediction?.ttl_seconds) {
         rawMlTtl = prediction.ttl_seconds;
-        ttl = Math.max(prediction.ttl_seconds, minTtl);
         evictScore = prediction.eviction_score ?? 50;
         mlUsed = true;
+
+        // BENCHMARK STRATEGY 1: Interval-anchored TTL
+        // Apply max(ml_ttl, 1.3 × interval_mean) so popular keys survive
+        // until the next actual request arrives.
+        // Mirrors benchmark MLCache._interval_ttl() and the simulate() line:
+        //   iv_ttl = max(TTL_MIN, min(int(interval_mean * 1.3), TTL_MAX))
+        //   ttl    = max(ttl, iv_ttl) if ac > 1 else ttl
+        const intervalMean =
+          prediction.interval_mean_seconds ??
+          stats.request_interval_mean ??
+          300;
+
+        ttl = intervalAnchoredTtl(
+          rawMlTtl,
+          intervalMean,
+          stats.key_access_count,
+          minTtl,
+        );
       }
 
-      // Store data + metadata in Redis
+      // Store data and metadata in Redis
       await cacheSet(cacheKey, data, ttl);
       await setKeyMeta(cacheKey, ttl, mlUsed, rawMlTtl, evictScore);
 
-      // Register in evictionMeta for ML-driven eviction decisions
+      // BENCHMARK STRATEGY 3: Register for smart eviction
+      // Track this key in evictionMeta so smartEvict() can use composite
+      // scoring instead of Redis's default LRU when proactively trimming.
       if (mlUsed && evictScore !== null) {
         registerForEviction(cacheKey, evictScore, ttl);
       }
@@ -442,19 +459,18 @@ const cacheMiddleware = (type) => {
         ml_used: mlUsed.toString(),
         eviction_score: evictScore !== null ? evictScore.toString() : "",
         raw_ml_ttl: rawMlTtl !== null ? rawMlTtl.toString() : "",
+        is_hit: "0",
       });
 
       const ttlSource = mlUsed
-        ? `ML:${ttl}s (raw:${rawMlTtl}s, min:${minTtl}s)`
+        ? `ML:${ttl}s (raw:${rawMlTtl}s, iv-anchored)`
         : `fallback:${ttl}s`;
-
       console.log(
         `🔴 CACHE MISS [${type}] ${cacheKey} (${latency}ms) → TTL ${ttlSource}`,
       );
 
-      // Prefetch
+      // PREFETCH
       if (mlUsed && prediction.prefetch_routes?.length > 0) {
-        const prefetchTtl = ttl;
         setImmediate(() => {
           const allCandidates = prediction.prefetch_routes.flatMap(
             (routeType) =>
@@ -464,16 +480,12 @@ const cacheMiddleware = (type) => {
               })),
           );
           if (allCandidates.length > 0) {
-            console.log(
-              `⚡ PREFETCH START [${type}] → warming ${allCandidates.length} keys ` +
-                `(routes: ${prediction.prefetch_routes.join(", ")})`,
-            );
             const byRoute = allCandidates.reduce((acc, c) => {
               (acc[c.routeType] = acc[c.routeType] || []).push(c);
               return acc;
             }, {});
             Object.entries(byRoute).forEach(([routeType, candidates]) => {
-              warmPrefetchCandidates(candidates, routeType, prefetchTtl).catch(
+              warmPrefetchCandidates(candidates, routeType, ttl).catch(
                 () => {},
               );
             });

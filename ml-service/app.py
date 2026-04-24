@@ -100,12 +100,13 @@ class PredictRequest(BaseModel):
 
 
 class PredictResponse(BaseModel):
-    ttl_seconds:        int
-    eviction_score:     float
-    prefetch_routes:    List[str]
-    reuse_probability:  float
-    inference_ms:       float
-    model_version:      str
+    ttl_seconds:          int
+    eviction_score:       float
+    prefetch_routes:      List[str]
+    reuse_probability:    float
+    inference_ms:         float
+    model_version:        str
+    interval_mean_seconds: float   # observed inter-arrival mean — used by middleware for interval-anchored TTL
 
 
 # Cache-key prefix encoding — must match train.py
@@ -224,6 +225,10 @@ def run_predict(req: PredictRequest) -> PredictResponse:
 
     inference_ms = round((time.perf_counter() - t0) * 1000, 3)
 
+    # Pass observed interval back to middleware so it can apply
+    # interval-anchored TTL (1.3× interval) — mirrors benchmark MLCache
+    interval_mean_s = float(req.request_interval_mean or 300.0)
+
     return PredictResponse(
         ttl_seconds=ttl_seconds,
         eviction_score=eviction_score,
@@ -231,6 +236,7 @@ def run_predict(req: PredictRequest) -> PredictResponse:
         reuse_probability=reuse_probability,
         inference_ms=inference_ms,
         model_version=META.get("trained_at", "no-model"),
+        interval_mean_seconds=interval_mean_s,
     )
 
 
