@@ -9,11 +9,11 @@ const { getClient } = require("../config/redis");
 
 // Fallback TTLs — used when ML service is unavailable
 const DEFAULT_TTLS = {
-  products_list: 300,
-  product_single: 600,
-  best_seller: 120,
-  new_arrivals: 180,
-  similar_products: 600,
+  products_list: 90,
+  product_single: 180,
+  best_seller: 36,
+  new_arrivals: 54,
+  similar_products: 180,
 };
 
 // Minimum TTL floor — prevents pathologically short TTLs in production

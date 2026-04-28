@@ -32,6 +32,7 @@ const CacheDashboard = () => {
   const [savingSnapshot, setSavingSnapshot] = useState(false);
   const [snapshotMsg, setSnapshotMsg] = useState(null);
   const [exportData, setExportData] = useState(null);
+  const [deletingIndex, setDeletingIndex] = useState(null);
 
   const authHeaders = useCallback(
     () => ({
@@ -220,6 +221,26 @@ const CacheDashboard = () => {
     }
   };
 
+  // Deletes a single snapshot by its index in the list.
+  // Uses DELETE /api/cache/snapshots/:index — the backend resolves
+  // the index to the exact Redis sorted-set member and removes it.
+  const handleDeleteSnapshot = async (index) => {
+    if (!window.confirm("Delete this snapshot? This cannot be undone.")) return;
+    setDeletingIndex(index);
+    try {
+      const BASE = import.meta.env.VITE_BACKEND_URL;
+      await axios.delete(`${BASE}/api/cache/snapshots/${index}`, authHeaders());
+      // Optimistically remove from local state, then re-fetch to sync
+      setSnapshots((prev) => prev.filter((_, i) => i !== index));
+      fetchData();
+    } catch (err) {
+      if (err.response?.status === 401) return handleUnauthorized();
+      alert(err.response?.data?.message || "Failed to delete snapshot.");
+    } finally {
+      setDeletingIndex(null);
+    }
+  };
+
   const showMlMsg = (type, text) => {
     setMlActionMsg({ type, text });
     setTimeout(() => setMlActionMsg(null), 6000);
@@ -305,22 +326,18 @@ const CacheDashboard = () => {
     }
   };
 
-  // ── Helper: safely format a date string ──
   const formatDate = (val) => {
     if (!val) return "—";
     const d = new Date(val);
     return isNaN(d.getTime()) ? "—" : d.toLocaleString();
   };
 
-  // ── Helper: safely format accuracy ──
   const formatAccuracy = (val) => {
     const num = parseFloat(val);
     if (isNaN(num)) return "—";
-    // If already a percentage (> 1), show as-is; otherwise multiply
     return num > 1 ? `${num.toFixed(1)}%` : `${(num * 100).toFixed(1)}%`;
   };
 
-  // ── Helper: safely format MAE ──
   const formatMae = (val) => {
     const num = parseFloat(val);
     if (isNaN(num)) return "—";
@@ -333,7 +350,6 @@ const CacheDashboard = () => {
   const { summary, by_route, by_hour, cached_keys, top_keys, recent_logs } =
     stats;
 
-  // FIX: guard against missing/empty recent_logs
   const safeLogs = Array.isArray(recent_logs) ? recent_logs : [];
   const maxHour = by_hour?.length ? Math.max(...by_hour) : 0;
 
@@ -721,7 +737,7 @@ const CacheDashboard = () => {
                   type="text"
                   value={snapshotLabel}
                   onChange={(e) => setSnapshotLabel(e.target.value)}
-                  placeholder='e.g. "Session 1 — Fixed TTL" or "Session 2 — LightCache ML"'
+                  placeholder='e.g. "Session 1" or "Session 2"'
                   className="flex-1 px-3 py-2 border rounded text-sm focus:outline-none focus:ring-1 focus:ring-black"
                 />
                 <button
@@ -759,7 +775,8 @@ const CacheDashboard = () => {
                 </h2>
                 <p className="text-xs text-gray-500 mt-1">
                   Each row is one evaluation session. Builds Table A and Table
-                  B.
+                  B. Use the Delete button to remove a single bad session
+                  without clearing all snapshots.
                 </p>
               </div>
               <div className="overflow-x-auto">
@@ -774,9 +791,10 @@ const CacheDashboard = () => {
                         "Avg RT (ms)",
                         "Throughput (KB/s)",
                         "Captured",
-                      ].map((h) => (
+                        "", // delete column — no header text
+                      ].map((h, i) => (
                         <th
-                          key={h}
+                          key={i}
                           className="px-4 py-2 text-left whitespace-nowrap"
                         >
                           {h}
@@ -786,7 +804,10 @@ const CacheDashboard = () => {
                   </thead>
                   <tbody>
                     {snapshots.map((s, i) => (
-                      <tr key={i} className="border-t">
+                      <tr
+                        key={i}
+                        className={`border-t ${deletingIndex === i ? "opacity-40" : ""}`}
+                      >
                         <td className="px-4 py-2 font-medium">{s.label}</td>
                         <td className="px-4 py-2">
                           <span
@@ -815,6 +836,15 @@ const CacheDashboard = () => {
                         <td className="px-4 py-2">{s.throughput_kbs ?? "—"}</td>
                         <td className="px-4 py-2 text-xs text-gray-400">
                           {formatDate(s.captured_at)}
+                        </td>
+                        <td className="px-4 py-2">
+                          <button
+                            onClick={() => handleDeleteSnapshot(i)}
+                            disabled={deletingIndex !== null}
+                            className="text-xs text-red-400 hover:text-red-600 hover:underline disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                          >
+                            {deletingIndex === i ? "Deleting…" : "Delete"}
+                          </button>
                         </td>
                       </tr>
                     ))}
@@ -1123,7 +1153,6 @@ const CacheDashboard = () => {
       {/* Retraining */}
       {activeTab === "retraining" && (
         <div className="space-y-6">
-          {/* Summary cards - all 3 model metrics */}
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
             {[
               {
@@ -1192,7 +1221,6 @@ const CacheDashboard = () => {
             ))}
           </div>
 
-          {/* Full history table */}
           <div className="border rounded-lg overflow-hidden">
             <div className="px-4 py-3 bg-gray-50 border-b">
               <h2 className="font-semibold">Retraining History</h2>
@@ -1320,7 +1348,6 @@ const CacheDashboard = () => {
             )}
           </div>
 
-          {/* Metric guide */}
           <div className="border rounded-lg overflow-hidden">
             <div className="px-4 py-3 bg-gray-50 border-b">
               <h2 className="font-semibold text-sm">
@@ -1409,7 +1436,6 @@ const CacheDashboard = () => {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {/* Model 1 — TTL Regressor */}
                 <div className="border-2 border-blue-200 rounded-xl p-5 bg-blue-50/40">
                   <div className="mb-4">
                     <h3 className="font-bold text-blue-900">
@@ -1430,13 +1456,7 @@ const CacheDashboard = () => {
                         </p>
                       </div>
                       <span
-                        className={`text-xl font-bold ${
-                          modelMetrics.metrics?.ttl_mae < 120
-                            ? "text-green-600"
-                            : modelMetrics.metrics?.ttl_mae < 200
-                              ? "text-yellow-600"
-                              : "text-orange-500"
-                        }`}
+                        className={`text-xl font-bold ${modelMetrics.metrics?.ttl_mae < 120 ? "text-green-600" : modelMetrics.metrics?.ttl_mae < 200 ? "text-yellow-600" : "text-orange-500"}`}
                       >
                         {modelMetrics.metrics?.ttl_mae != null
                           ? `${modelMetrics.metrics.ttl_mae}s`
@@ -1453,47 +1473,11 @@ const CacheDashboard = () => {
                         </p>
                       </div>
                       <span
-                        className={`text-xl font-bold ${
-                          modelMetrics.metrics?.ttl_r2 > 0.7
-                            ? "text-green-600"
-                            : modelMetrics.metrics?.ttl_r2 > 0.45
-                              ? "text-yellow-600"
-                              : "text-red-500"
-                        }`}
+                        className={`text-xl font-bold ${modelMetrics.metrics?.ttl_r2 > 0.7 ? "text-green-600" : modelMetrics.metrics?.ttl_r2 > 0.45 ? "text-yellow-600" : "text-red-500"}`}
                       >
                         {modelMetrics.metrics?.ttl_r2 ?? "—"}
                       </span>
                     </div>
-                    {modelMetrics.metrics?.ttl_target_mean != null && (
-                      <div className="flex justify-between items-baseline">
-                        <div>
-                          <p className="text-sm font-medium text-gray-700">
-                            Target mean
-                          </p>
-                          <p className="text-xs text-gray-400">
-                            Avg observed TTL in training data
-                          </p>
-                        </div>
-                        <span className="text-xl font-bold text-gray-700">
-                          {modelMetrics.metrics.ttl_target_mean}s
-                        </span>
-                      </div>
-                    )}
-                    {modelMetrics.metrics?.ttl_target_std != null && (
-                      <div className="flex justify-between items-baseline">
-                        <div>
-                          <p className="text-sm font-medium text-gray-700">
-                            Target std
-                          </p>
-                          <p className="text-xs text-gray-400">
-                            Spread of TTL values
-                          </p>
-                        </div>
-                        <span className="text-xl font-bold text-gray-700">
-                          {modelMetrics.metrics.ttl_target_std}s
-                        </span>
-                      </div>
-                    )}
                     {modelMetrics.train_rows != null && (
                       <div className="pt-2 border-t border-blue-100 grid grid-cols-2 gap-2 text-xs text-gray-500">
                         <div>
@@ -1503,17 +1487,11 @@ const CacheDashboard = () => {
                           <p className="text-sm font-bold text-gray-700">
                             {modelMetrics.train_rows?.toLocaleString()}
                           </p>
-                          <p className="text-gray-400">
-                            80% split used for training
-                          </p>
                         </div>
                         <div>
                           <p className="font-medium text-gray-600">Test rows</p>
                           <p className="text-sm font-bold text-gray-700">
                             {modelMetrics.test_rows?.toLocaleString()}
-                          </p>
-                          <p className="text-gray-400">
-                            20% held-out for evaluation
                           </p>
                         </div>
                       </div>
@@ -1521,7 +1499,6 @@ const CacheDashboard = () => {
                   </div>
                 </div>
 
-                {/* Model 2 — Eviction Score Regressor */}
                 <div className="border-2 border-purple-200 rounded-xl p-5 bg-purple-50/40">
                   <div className="mb-4">
                     <h3 className="font-bold text-purple-900">
@@ -1542,11 +1519,7 @@ const CacheDashboard = () => {
                         </p>
                       </div>
                       <span
-                        className={`text-xl font-bold ${
-                          modelMetrics.metrics?.evict_mae < 8
-                            ? "text-green-600"
-                            : "text-yellow-600"
-                        }`}
+                        className={`text-xl font-bold ${modelMetrics.metrics?.evict_mae < 8 ? "text-green-600" : "text-yellow-600"}`}
                       >
                         {modelMetrics.metrics?.evict_mae ?? "—"}
                       </span>
@@ -1561,63 +1534,14 @@ const CacheDashboard = () => {
                         </p>
                       </div>
                       <span
-                        className={`text-xl font-bold ${
-                          modelMetrics.metrics?.evict_r2 > 0.85
-                            ? "text-green-600"
-                            : modelMetrics.metrics?.evict_r2 > 0.6
-                              ? "text-yellow-600"
-                              : "text-red-500"
-                        }`}
+                        className={`text-xl font-bold ${modelMetrics.metrics?.evict_r2 > 0.85 ? "text-green-600" : modelMetrics.metrics?.evict_r2 > 0.6 ? "text-yellow-600" : "text-red-500"}`}
                       >
                         {modelMetrics.metrics?.evict_r2 ?? "—"}
                       </span>
                     </div>
-                    {modelMetrics.metrics?.evict_score_mean != null && (
-                      <div className="flex justify-between items-baseline">
-                        <div>
-                          <p className="text-sm font-medium text-gray-700">
-                            Score mean
-                          </p>
-                          <p className="text-xs text-gray-400">
-                            Avg eviction score in training data
-                          </p>
-                        </div>
-                        <span className="text-xl font-bold text-gray-700">
-                          {modelMetrics.metrics.evict_score_mean}
-                        </span>
-                      </div>
-                    )}
-                    {modelMetrics.metrics?.evict_score_std != null && (
-                      <div className="flex justify-between items-baseline">
-                        <div>
-                          <p className="text-sm font-medium text-gray-700">
-                            Score std
-                          </p>
-                          <p className="text-xs text-gray-400">
-                            Spread of score values (0–200 scale)
-                          </p>
-                        </div>
-                        <span className="text-xl font-bold text-gray-700">
-                          {modelMetrics.metrics.evict_score_std}
-                        </span>
-                      </div>
-                    )}
-                    <div className="pt-2 border-t border-purple-100 space-y-1">
-                      <div className="flex justify-between text-xs">
-                        <span className="text-gray-500">Score range</span>
-                        <span className="font-bold text-gray-700">0 – 200</span>
-                      </div>
-                      <div className="flex justify-between text-xs">
-                        <span className="text-gray-500">Eviction rule</span>
-                        <span className="font-bold text-gray-700">
-                          Min score evicted first
-                        </span>
-                      </div>
-                    </div>
                   </div>
                 </div>
 
-                {/* Model 3 — Prefetch Classifier */}
                 <div className="border-2 border-green-200 rounded-xl p-5 bg-green-50/40">
                   <div className="mb-4">
                     <h3 className="font-bold text-green-900">
@@ -1638,13 +1562,7 @@ const CacheDashboard = () => {
                         </p>
                       </div>
                       <span
-                        className={`text-xl font-bold ${
-                          modelMetrics.metrics?.reuse_f1 > 0.8
-                            ? "text-green-600"
-                            : modelMetrics.metrics?.reuse_f1 > 0.75
-                              ? "text-yellow-600"
-                              : "text-red-500"
-                        }`}
+                        className={`text-xl font-bold ${modelMetrics.metrics?.reuse_f1 > 0.8 ? "text-green-600" : modelMetrics.metrics?.reuse_f1 > 0.75 ? "text-yellow-600" : "text-red-500"}`}
                       >
                         {modelMetrics.metrics?.reuse_f1 ?? "—"}
                       </span>
@@ -1660,57 +1578,12 @@ const CacheDashboard = () => {
                           </p>
                         </div>
                         <span
-                          className={`text-xl font-bold ${
-                            modelMetrics.metrics.reuse_auc > 0.88
-                              ? "text-green-600"
-                              : "text-yellow-600"
-                          }`}
+                          className={`text-xl font-bold ${modelMetrics.metrics.reuse_auc > 0.88 ? "text-green-600" : "text-yellow-600"}`}
                         >
                           {modelMetrics.metrics.reuse_auc}
                         </span>
                       </div>
                     )}
-                    <div className="pt-2 border-t border-green-100 space-y-2 text-xs">
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">Output labels</span>
-                        <span className="font-bold text-gray-700">
-                          {modelMetrics.metrics?.prefetch_labels ?? 5}
-                        </span>
-                      </div>
-                      <p className="text-gray-400">
-                        One binary classifier per route type
-                      </p>
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">Classifier type</span>
-                        <span className="font-bold text-gray-700">
-                          MultiOutputClassifier
-                        </span>
-                      </div>
-                      <p className="text-gray-400">
-                        sklearn wrapper for multi-label
-                      </p>
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">Base estimator</span>
-                        <span className="font-bold text-gray-700">
-                          LGBMClassifier
-                        </span>
-                      </div>
-                      <p className="text-gray-400">
-                        LightGBM binary classification
-                      </p>
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">Prefetch strategy</span>
-                        <span className="font-bold text-gray-700">
-                          Top-3 routes
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">Trigger</span>
-                        <span className="font-bold text-gray-700">
-                          On cache MISS
-                        </span>
-                      </div>
-                    </div>
                   </div>
                 </div>
               </div>
@@ -1759,15 +1632,10 @@ const CacheDashboard = () => {
               Switch between standard fixed TTL and LightCache's dynamic ML
               predictions.
             </p>
-
             <div className="mt-6 flex flex-col gap-3">
               <button
                 onClick={() => handleModeToggle("redis_only")}
-                className={`flex items-center justify-between p-4 border-2 rounded-xl transition-all ${
-                  mlMode === "redis_only"
-                    ? "border-black bg-gray-50"
-                    : "border-gray-200 hover:border-gray-300"
-                }`}
+                className={`flex items-center justify-between p-4 border-2 rounded-xl transition-all ${mlMode === "redis_only" ? "border-black bg-gray-50" : "border-gray-200 hover:border-gray-300"}`}
               >
                 <div className="text-left">
                   <p className="font-bold">Fixed TTL (Redis Only)</p>
@@ -1781,14 +1649,9 @@ const CacheDashboard = () => {
                   </div>
                 )}
               </button>
-
               <button
                 onClick={() => handleModeToggle("ml_active")}
-                className={`flex items-center justify-between p-4 border-2 rounded-xl transition-all ${
-                  mlMode === "ml_active"
-                    ? "border-green-600 bg-green-50"
-                    : "border-gray-200 hover:border-gray-300"
-                }`}
+                className={`flex items-center justify-between p-4 border-2 rounded-xl transition-all ${mlMode === "ml_active" ? "border-green-600 bg-green-50" : "border-gray-200 hover:border-gray-300"}`}
               >
                 <div className="text-left">
                   <p className="font-bold">LightCache ML Active</p>
