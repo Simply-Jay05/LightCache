@@ -533,6 +533,49 @@ def benchmark_results():
         return json.load(f)
 
 
+@app.post("/benchmark/run")
+def benchmark_run():
+    """
+    Triggers benchmark.py synchronously against the current cache_events.jsonl
+    and returns the updated results. Called by the dashboard Re-run Benchmark button.
+    Times out after 120 seconds — enough for any realistic dataset size.
+    """
+    data_path  = BASE_DIR / "logs"  / "cache_events.jsonl"
+    output_path = BENCHMARK_MODEL_PATH  # /app/model/benchmark_results.json
+
+    if not data_path.exists():
+        raise HTTPException(
+            status_code=400,
+            detail="No cache_events.jsonl found. Run Locust first to generate traffic."
+        )
+
+    import subprocess
+    try:
+        result = subprocess.run(
+            [
+                "python", str(BASE_DIR / "benchmark.py"),
+                "--data",   str(data_path),
+                "--output", str(output_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"benchmark.py failed: {result.stderr[-500:]}"
+            )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Benchmark timed out (>120s)")
+
+    if not output_path.exists():
+        raise HTTPException(status_code=500, detail="Benchmark ran but produced no output file.")
+
+    with open(output_path, "r") as f:
+        return json.load(f)
+
+
 @app.get("/admin/retrain-history")
 def retrain_history():
     history_file = BASE_DIR / "model" / "retrain_history.json"
