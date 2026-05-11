@@ -321,18 +321,25 @@ class MLCache:
 
     1. Interval-anchored TTL
        TTL is set to 1.3× the observed inter-arrival interval for each key,
-       ensuring popular keys (best_seller avg interval 685s, fixed TTL 120s)
-       stay in cache until the next request arrives.
-       Root cause of low hit rate: keys expiring before re-access.
+       ensuring popular keys stay in cache until the next request arrives.
 
-    2. Composite eviction score
+    2. Composite eviction score with corrected recency half-life
        Eviction priority = ML_score × recency_decay × ttl_remaining_ratio
-       Adaptive half-life (40% of key's own TTL) so short-TTL keys decay
-       faster than long-TTL keys.
+       Half-life is set to max(300s, TTL × 2.0) — two full TTL cycles.
+       The original 0.4× half-life was too short: keys with natural inter-arrival
+       gaps of 600–1800s had their recency decayed to near-zero between accesses,
+       causing the composite score to collapse even when the ML score indicated
+       high future value. The longer half-life preserves the recency signal
+       without penalising keys for their natural access cadence.
 
-    3. Score refresh on HIT
+    3. Progressive TTL growth on repeated hits
+       Each cache hit extends the key's TTL by 20% (capped at TTL_MAX).
+       Frequently-accessed keys develop longer cache residency organically,
+       reducing churn for the most popular keys without any manual tuning.
+
+    4. Score refresh on HIT
        Eviction score updated on every access so frequently-used keys
-       accumulate high scores and resist eviction — closing LRU's recency gap.
+       accumulate high scores and resist eviction.
     """
     def __init__(self, capacity):
         self.capacity  = capacity
@@ -340,10 +347,8 @@ class MLCache:
         self.scores    = {}   # key → latest eviction score
         self.access    = {}   # key → last_access_ms
         self.ttls      = {}   # key → assigned ttl_s
-        self.seen_keys = set()
 
     def get(self, key, now_ms):
-        self.seen_keys.add(key)
         if key not in self.cache:
             return False
         if now_ms > self.cache[key]:
@@ -353,8 +358,13 @@ class MLCache:
             self.ttls.pop(key, None)
             return False
         self.access[key] = now_ms
-        # TTL refresh on hit: extend expiry so active keys don't expire mid-session
-        self.cache[key] = now_ms + self.ttls.get(key, 300) * 1000
+        # Progressive TTL growth: each hit extends residency by 20%, capped at TTL_MAX.
+        # Frequently-hit keys naturally accumulate longer cache lifetimes, reducing
+        # the chance of evicting a still-popular key on its next miss.
+        current_ttl = self.ttls.get(key, 300)
+        extended_ttl = min(int(current_ttl * 1.2), TTL_MAX)
+        self.ttls[key] = extended_ttl
+        self.cache[key] = now_ms + extended_ttl * 1000
         return True
 
     def update_score(self, key, score):
@@ -373,7 +383,6 @@ class MLCache:
 
     def put(self, key, ttl, now_ms, score=50.0, record=None,
             interval_mean=300.0, **_):
-        self.seen_keys.add(key)
         smart_ttl = self._interval_ttl(ttl, interval_mean)
         self.cache[key]  = now_ms + smart_ttl * 1000
         self.scores[key] = score
@@ -393,13 +402,25 @@ class MLCache:
                 return
 
         # Stage 2: composite score eviction
+        #
+        # CHANGE: half_life_ms = max(300_000ms, TTL_s × 2.0 × 1000)
+        # Previously: max(30_000ms, TTL_s × 0.40 × 1000)
+        #
+        # Rationale: with the old 0.4× half-life, a key with TTL=600s had a
+        # half-life of only 240s. After one natural inter-arrival gap of ~600s,
+        # recency = exp(-600/240) ≈ 0.08 — the composite score dropped 92% even
+        # though the ML eviction score (future access count) was still high.
+        # This caused the system to evict high-value keys that simply hadn't been
+        # accessed recently in their normal rhythm.
+        # The 2.0× half-life (min 300s) keeps recency above 0.37 for keys accessed
+        # within one full TTL cycle, preserving the ML score's true signal.
         best_key = None
         best_val = float("inf")
         for k in self.cache:
             ml_score      = self.scores.get(k, 50.0)
             original_ttl  = self.ttls.get(k, 300)
             expire_ms     = self.cache[k]
-            half_life_ms  = max(30_000.0, original_ttl * 1000 * 0.40)
+            half_life_ms  = max(300_000.0, original_ttl * 1000 * 2.0)   # FIXED: was 0.40
             age_ms        = now_ms - self.access.get(k, now_ms)
             recency       = math.exp(-age_ms / half_life_ms)
             ttl_rem_ms    = max(0.0, expire_ms - now_ms)
@@ -464,7 +485,6 @@ def simulate(records, cache, strategy, ttl_model=None, evict_model=None):
                     ac, hr, since, interval_mean, interval_std
                 )
                 # Apply interval-anchored TTL on top of ML prediction
-                # ML TTL is the model's best guess; anchor ensures key survives
                 iv_ttl  = max(TTL_MIN, min(int(interval_mean * 1.3), TTL_MAX))
                 ttl     = max(ttl, iv_ttl) if ac > 1 else ttl
             else:
