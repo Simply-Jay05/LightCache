@@ -1588,34 +1588,64 @@ const CacheDashboard = () => {
                 </div>
               </div>
 
-              {modelMetrics.feature_importances?.length > 0 && (
-                <div className="border rounded-lg overflow-hidden">
-                  <div className="px-4 py-3 bg-gray-50 border-b">
-                    <h2 className="font-semibold">
-                      Feature Importances — TTL Model
-                    </h2>
-                    <p className="text-xs text-gray-500 mt-0.5">
-                      Top features driving TTL prediction, by split gain
-                    </p>
-                  </div>
-                  <div className="p-4 space-y-2">
-                    {modelMetrics.feature_importances.slice(0, 12).map((f) => (
-                      <div key={f.feature} className="flex items-center gap-3">
-                        <span className="text-xs font-mono w-52 text-right text-gray-500 shrink-0">
-                          {f.feature}
-                        </span>
-                        <div className="flex-1 bg-gray-100 rounded-full h-2">
-                          <div
-                            className="bg-black h-2 rounded-full transition-all"
-                            style={{ width: `${f.importance_pct}%` }}
-                          />
+              {/* ── Feature Importance — all three models ─────────────────────────── */}
+              {(modelMetrics.feature_importances?.length > 0 ||
+                modelMetrics.feature_importances_evict?.length > 0 ||
+                modelMetrics.feature_importances_reuse?.length > 0) && (
+                <div className="mt-6 space-y-6">
+                  {/* Helper: renders one bar-chart card */}
+                  {[
+                    {
+                      key: "ttl",
+                      title: "Feature Importances — TTL Regressor",
+                      sub: "Top features driving TTL prediction, by split gain",
+                      data: modelMetrics.feature_importances ?? [],
+                    },
+                    {
+                      key: "evict",
+                      title: "Feature Importances — Eviction Score Regressor",
+                      sub: "Top features driving eviction score prediction, by split gain",
+                      data: modelMetrics.feature_importances_evict ?? [],
+                    },
+                    {
+                      key: "reuse",
+                      title: "Feature Importances — Prefetch Classifier",
+                      sub: "Top features driving cache-reuse / prefetch classification, by split gain",
+                      data: modelMetrics.feature_importances_reuse ?? [],
+                    },
+                  ]
+                    .filter((m) => m.data.length > 0)
+                    .map((model) => (
+                      <div key={model.key} className="border rounded-lg p-4">
+                        <p className="font-semibold text-sm mb-1">
+                          {model.title}
+                        </p>
+                        <p className="text-xs text-gray-500 mb-3">
+                          {model.sub}
+                        </p>
+                        <div className="space-y-1">
+                          {model.data.slice(0, 12).map((f) => (
+                            <div
+                              key={f.feature}
+                              className="flex items-center gap-2 text-xs"
+                            >
+                              <span className="w-44 text-right text-gray-600 shrink-0 truncate">
+                                {f.feature}
+                              </span>
+                              <div className="flex-1 bg-gray-100 rounded-full h-3 overflow-hidden">
+                                <div
+                                  className="h-3 rounded-full bg-blue-500"
+                                  style={{ width: `${f.importance_pct}%` }}
+                                />
+                              </div>
+                              <span className="w-12 text-right text-gray-500 shrink-0">
+                                {f.importance_pct}%
+                              </span>
+                            </div>
+                          ))}
                         </div>
-                        <span className="text-xs text-gray-500 w-10 text-right shrink-0">
-                          {f.importance_pct}%
-                        </span>
                       </div>
                     ))}
-                  </div>
                 </div>
               )}
             </>

@@ -216,26 +216,8 @@ def build_targets(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # Target 3: cache_reuse
-    #
-    # CHANGE FROM ORIGINAL: previously used (next_gap_s <= ttl_used)
-    # Problem: ttl_used has mean=949s (keys cached for ~16 min on average), so
-    # 93.5% of rows are labelled reuse=1. This extreme imbalance makes it
-    # impossible for any classifier to learn the minority negative class well
-    # (macro F1 ceiling ≈ 0.73 regardless of balancing strategy).
-    #
-    # Fix: use a FIXED 1200-second (20-minute) access window instead.
-    # Semantics: "will this key be accessed again within 20 minutes?"
-    # This is equally valid for prefetching decisions and produces:
-    #   - AUC 0.982 (vs 0.944 before)
-    #   - macro F1 0.845+ (vs 0.73 ceiling before)
-    # The improvement comes from the fixed window being a cleaner prediction
-    # target — the model can learn inter-arrival patterns against a stable
-    # reference rather than chasing a variable runtime TTL.
-    #
-    # FEATURE_COLS and benchmark.py are completely unchanged.
-    REUSE_WINDOW_S = 1200   # 20-minute access window
     df["next_gap_s"]  = (df["next_request_ts"] - df["timestamp"]) / 1000.0
-    df["cache_reuse"] = (df["next_gap_s"] <= REUSE_WINDOW_S).astype(int)
+    df["cache_reuse"] = (df["next_gap_s"] <= df["ttl_used"]).astype(int)
     df["cache_reuse"] = df["cache_reuse"].fillna(0).astype(int)
 
     print(f"   dynamic_ttl    — mean: {df['dynamic_ttl'].mean():.0f}s  "
@@ -272,7 +254,7 @@ def train(df: pd.DataFrame):
     print("\nTraining models...")
     X = df[FEATURE_COLS].fillna(0)
 
-    # Model 1 — TTL Regressor (unchanged)
+    # Model 1 — TTL Regressor
     y_ttl = df["dynamic_ttl"]
     Xtr, Xte, ytr, yte = train_test_split(
         X, y_ttl, test_size=0.2, random_state=42, shuffle=True
@@ -302,7 +284,7 @@ def train(df: pd.DataFrame):
     print(f"       R²     : {ttl_r2}")
     print(f"       Expected: MAE ~80–160s, R² 0.45–0.70")
 
-    # Model 2 — Eviction Score Regressor (unchanged)
+    # Model 2 — Eviction Score Regressor
     y_evict = df["eviction_score"]
     Xtr2, Xte2, ytr2, yte2 = train_test_split(
         X, y_evict, test_size=0.2, random_state=42, shuffle=True
@@ -324,61 +306,43 @@ def train(df: pd.DataFrame):
     print(f"       Expected: R² 0.6–0.85")
 
     # Model 3 — Cache-Reuse / Prefetch Classifier
-    #
-    # Target: cache_reuse = (next_gap_s <= 1200) — "accessed within 20 minutes"
-    # (Changed from original ttl_used-based target — see build_targets for rationale)
-    #
-    # Two combined fixes produce F1 0.85, AUC 0.983 (verified on this dataset):
-    #
-    # Fix A — cleaner target window (in build_targets):
-    #   Original target (next_gap <= ttl_used) had ttl_used mean=949s → 93.5% positive.
-    #   Fixed window (next_gap <= 1200s) keeps the same semantic meaning but is a
-    #   stable, learnable boundary → AUC jumps from 0.944 to 0.983.
-    #
-    # Fix B — exclude last-access noise from TRAINING only:
-    #   407 rows are the last recorded event per cache key (no next request exists).
-    #   Their next_gap_s = NaN → cache_reuse = 0, but their features look identical
-    #   to reuse=1 rows (high past_access_count, good rolling_hit_rate).
-    #   Training on them teaches the model the wrong boundary.
-    #   We exclude them from the training pool only; the test set is untouched.
-    #
-    # FEATURE_COLS stays at exactly 23. benchmark.py is completely untouched.
-    y_reuse = df["cache_reuse"]
-
-    # Exclude last-access rows from training pool (has_next = has a following request)
-    has_next   = df["next_request_ts"].notna()
-    X_clean    = X[has_next]
-    y_clean    = y_reuse[has_next]
-
-    # Stratified split on the clean pool; test set is clean-only (honest evaluation)
+    y_reuse = df["cache_reuse"]   # must stay here — metrics block uses y_reuse
     Xtr3, Xte3, ytr3, yte3 = train_test_split(
-        X_clean, y_clean, test_size=0.2, random_state=42, shuffle=True,
-        stratify=y_clean,
+        X, y_reuse, test_size=0.2, random_state=42, shuffle=True,
+        stratify=y_reuse,
     )
 
-    # sample_weight: negatives get (n_pos / n_neg) times more weight
-    # so their gradient contribution matches the positive class total
-    n_neg3 = int((ytr3 == 0).sum())
-    n_pos3 = int((ytr3 == 1).sum())
-    neg_weight = n_pos3 / n_neg3   # ≈ 34.7 on this dataset
-    sample_weights3 = np.where(ytr3.values == 0, neg_weight, 1.0)
+    # 2:1 downsample on training set only; test set untouched
+    neg_idx    = np.where(ytr3.values == 0)[0]
+    pos_idx    = np.where(ytr3.values == 1)[0]
+    n_neg      = len(neg_idx)
+    n_pos_keep = min(len(pos_idx), n_neg * 2)
+    rng        = np.random.RandomState(42)
+    pos_sample = rng.choice(pos_idx, size=n_pos_keep, replace=False)
+    bal_idx    = np.concatenate([neg_idx, pos_sample])
+    rng.shuffle(bal_idx)
+    Xtr3_bal   = Xtr3.iloc[bal_idx]
+    ytr3_bal   = ytr3.iloc[bal_idx]
 
     reuse_model = LGBMClassifier(
+        boosting_type="dart",
         n_estimators=800,
-        learning_rate=0.02,
+        learning_rate=0.01,
         max_depth=7,
-        num_leaves=63,
-        min_child_samples=5,
+        num_leaves=50,
+        min_child_samples=3,
         subsample=0.8,
         colsample_bytree=0.8,
+        drop_rate=0.1,
+        skip_drop=0.5,
         reg_alpha=0.05,
         reg_lambda=0.05,
         random_state=42,
         verbose=-1,
     )
-    reuse_model.fit(Xtr3, ytr3, sample_weight=sample_weights3)
+    reuse_model.fit(Xtr3_bal, ytr3_bal)
 
-    # Fine-grained threshold search on the full unbalanced test set
+    # Threshold search on FULL unbalanced test set
     reuse_proba       = reuse_model.predict_proba(Xte3)[:, 1]
     best_f1, best_thr = 0.0, 0.5
     for thr in np.arange(0.05, 0.96, 0.005):
@@ -390,13 +354,11 @@ def train(df: pd.DataFrame):
     reuse_preds = (reuse_proba >= best_thr).astype(int)
     reuse_f1    = round(float(f1_score(yte3, reuse_preds, average="macro", zero_division=0)), 3)
     reuse_auc   = round(float(roc_auc_score(yte3, reuse_proba)), 3)
-    n_te_neg    = int((yte3 == 0).sum())
-    n_te_pos    = int((yte3 == 1).sum())
     print(f"\n   [3] Cache-Reuse / Prefetch Classifier")
     print(f"       Target window    : 1200s (20-min access window)")
-    print(f"       Train (clean)    : {n_neg3} neg / {n_pos3} pos (neg weight={neg_weight:.1f}x)")
-    print(f"       Test set (clean) : {n_te_neg} neg / {n_te_pos} pos")
-    print(f"       Best threshold   : {best_thr:.3f}")
+    print(f"       Train (2:1)      : {n_neg} neg / {n_pos_keep} pos")
+    print(f"       Test  (full)     : {int((yte3==0).sum())} neg / {int((yte3==1).sum())} pos")
+    print(f"       Best thresh      : {best_thr:.3f}")
     print(f"       F1 (macro)       : {reuse_f1}")
     print(f"       AUC-ROC          : {reuse_auc}")
     print(f"       Expected         : F1 0.83–0.87, AUC 0.97–0.99")
@@ -437,18 +399,33 @@ def save_models(ttl_model, evict_model, reuse_model, df, metrics=None):
     with open(MODEL_PATH, "wb") as f:
         pickle.dump(bundle, f)
 
-    raw_imp = ttl_model.feature_importances_
-    max_imp = float(max(raw_imp)) if max(raw_imp) > 0 else 1.0
-    feat_imp = [
-        {
-            "feature":        feat,
-            "importance":     round(float(imp), 4),
-            "importance_pct": round(float(imp) / max_imp * 100, 1),
-        }
-        for feat, imp in sorted(
-            zip(FEATURE_COLS, raw_imp), key=lambda x: x[1], reverse=True
+    # ── Feature importance builder (shared by all three models) ──────────────
+    def _importance_list(model, cols):
+        raw = model.feature_importances_
+        mx  = float(max(raw)) if max(raw) > 0 else 1.0
+        return sorted(
+            [
+                {
+                    "feature":        feat,
+                    "importance":     round(float(imp), 4),
+                    "importance_pct": round(float(imp) / mx * 100, 1),
+                }
+                for feat, imp in zip(cols, raw)
+            ],
+            key=lambda x: x["importance"],
+            reverse=True,
         )
-    ]
+
+    feat_imp_ttl   = _importance_list(ttl_model,   FEATURE_COLS)
+    feat_imp_evict = _importance_list(evict_model, FEATURE_COLS)
+
+    # DART classifiers do expose feature_importances_ — wrap in try/except
+    # in case a future model type does not support it
+    try:
+        feat_imp_reuse = _importance_list(reuse_model, FEATURE_COLS)
+    except Exception as e:
+        print(f"   Warning: could not compute reuse model importances: {e}")
+        feat_imp_reuse = []
 
     meta = {
         "trained_at":      pd.Timestamp.now().isoformat(),
@@ -468,7 +445,10 @@ def save_models(ttl_model, evict_model, reuse_model, df, metrics=None):
         },
         "price_tier_map": {"unknown": 0, "budget": 1, "mid": 2, "premium": 3},
         "metrics":        metrics or {},
-        "feature_importances": feat_imp,
+        # ── Feature importances for all three models ──────────────────────────
+        "feature_importances":       feat_imp_ttl,    # TTL Regressor (kept for backwards compat)
+        "feature_importances_evict": feat_imp_evict,  # Eviction Score Regressor
+        "feature_importances_reuse": feat_imp_reuse,  # Prefetch Classifier
     }
     with open(META_PATH, "w") as f:
         json.dump(meta, f, indent=2)
@@ -477,7 +457,7 @@ def save_models(ttl_model, evict_model, reuse_model, df, metrics=None):
     print(f"   Meta saved  : {META_PATH.name}")
 
 
-# 6. FEATURE IMPORTANCE
+# 6. FEATURE IMPORTANCE (console print — TTL model only, for training log readability)
 def print_importance(ttl_model):
     print("\nTop features — TTL model:")
     pairs = sorted(

@@ -594,14 +594,19 @@ def model_metrics():
     with open(META_PATH, "r") as f:
         meta = json.load(f)
     return {
-        "trained_at":          meta.get("trained_at"),
-        "training_rows":       meta.get("training_rows"),
-        "ttl_bounds":          meta.get("ttl_bounds"),
-        "metrics":             meta.get("metrics", {}),
-        "model_notes":         meta.get("model_notes", {}),
-        "feature_importances": meta.get("feature_importances", []),
-        "feature_cols":        meta.get("feature_cols", []),
-        "route_types":         meta.get("route_types", []),
+        "trained_at":                  meta.get("trained_at"),
+        "training_rows":               meta.get("training_rows"),
+        "ttl_bounds":                  meta.get("ttl_bounds"),
+        "metrics":                     meta.get("metrics", {}),
+        "model_notes":                 meta.get("model_notes", {}),
+        # TTL Regressor importances (original key — kept for backwards compat)
+        "feature_importances":         meta.get("feature_importances", []),
+        # Eviction Score Regressor importances (new)
+        "feature_importances_evict":   meta.get("feature_importances_evict", []),
+        # Prefetch Classifier importances (new)
+        "feature_importances_reuse":   meta.get("feature_importances_reuse", []),
+        "feature_cols":                meta.get("feature_cols", []),
+        "route_types":                 meta.get("route_types", []),
     }
 
 
