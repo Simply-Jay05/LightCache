@@ -536,20 +536,24 @@ def benchmark_results():
 @app.post("/benchmark/run")
 def benchmark_run():
     """
-    Triggers benchmark.py synchronously against the current cache_events.jsonl
-    and returns the updated results. Called by the dashboard Re-run Benchmark button.
-    Times out after 120 seconds — enough for any realistic dataset size.
+    Triggers benchmark.py synchronously and returns updated results.
+    FIX: copies output to the shared logs_data Docker volume (/app/logs/)
+    so the backend container can immediately serve the fresh results.
+    The backend reads from /app/logs/benchmark_results.json via the
+    shared logs_data volume — NOT from /app/model/ which is ml-service only.
     """
-    data_path  = BASE_DIR / "logs"  / "cache_events.jsonl"
-    output_path = BENCHMARK_MODEL_PATH  # /app/model/benchmark_results.json
-
+    import subprocess
+    import shutil
+ 
+    data_path   = BASE_DIR / "logs" / "cache_events.jsonl"
+    output_path = BENCHMARK_MODEL_PATH          # /app/model/benchmark_results.json
+ 
     if not data_path.exists():
         raise HTTPException(
             status_code=400,
-            detail="No cache_events.jsonl found. Run Locust first to generate traffic."
+            detail="No cache_events.jsonl found. Run Locust first."
         )
-
-    import subprocess
+ 
     try:
         result = subprocess.run(
             [
@@ -568,10 +572,20 @@ def benchmark_run():
             )
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=504, detail="Benchmark timed out (>120s)")
-
+ 
     if not output_path.exists():
-        raise HTTPException(status_code=500, detail="Benchmark ran but produced no output file.")
-
+        raise HTTPException(
+            status_code=500,
+            detail="Benchmark ran but produced no output file."
+        )
+ 
+    # KEY FIX: copy to shared logs_data volume so the backend reads fresh data
+    try:
+        BENCHMARK_LOGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(output_path, BENCHMARK_LOGS_PATH)
+    except Exception as copy_err:
+        print(f"Warning: failed to copy benchmark to logs volume: {copy_err}")
+ 
     with open(output_path, "r") as f:
         return json.load(f)
 
@@ -599,16 +613,12 @@ def model_metrics():
         "ttl_bounds":                  meta.get("ttl_bounds"),
         "metrics":                     meta.get("metrics", {}),
         "model_notes":                 meta.get("model_notes", {}),
-        # TTL Regressor importances (original key — kept for backwards compat)
-        "feature_importances":         meta.get("feature_importances", []),
-        # Eviction Score Regressor importances (new)
+        "feature_importances":         meta.get("feature_importances",       []),
         "feature_importances_evict":   meta.get("feature_importances_evict", []),
-        # Prefetch Classifier importances (new)
         "feature_importances_reuse":   meta.get("feature_importances_reuse", []),
         "feature_cols":                meta.get("feature_cols", []),
-        "route_types":                 meta.get("route_types", []),
+        "route_types":                 meta.get("route_types",  []),
     }
-
 
 
 
