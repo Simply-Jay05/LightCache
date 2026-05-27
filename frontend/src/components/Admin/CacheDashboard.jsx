@@ -662,43 +662,6 @@ const CacheDashboard = () => {
                   </tbody>
                 </table>
               </div>
-
-              {benchmark.chapter4_table_c && (
-                <div className="border rounded-lg p-4 bg-blue-50">
-                  <h3 className="font-semibold text-blue-900 mb-2">
-                    vs Base Paper (IRCache, Pramudia et al. 2025)
-                  </h3>
-                  <div className="grid grid-cols-3 gap-4 text-sm">
-                    {[
-                      {
-                        label: "LightCache avg",
-                        value: `${benchmark.chapter4_table_c.averages?.LightCache?.toFixed(2)}%`,
-                        bold: true,
-                      },
-                      {
-                        label: "vs RR ceiling (62.06%)",
-                        value: `${benchmark.chapter4_table_c.lightcache_vs_base_paper_rr > 0 ? "+" : ""}${benchmark.chapter4_table_c.lightcache_vs_base_paper_rr?.toFixed(2)}%`,
-                      },
-                      {
-                        label: "vs LRU base paper",
-                        value: `${benchmark.chapter4_table_c.lightcache_vs_lru > 0 ? "+" : ""}${benchmark.chapter4_table_c.lightcache_vs_lru?.toFixed(2)}%`,
-                      },
-                    ].map((item) => (
-                      <div
-                        key={item.label}
-                        className="bg-white border border-blue-100 rounded p-3"
-                      >
-                        <p className="text-xs text-gray-500">{item.label}</p>
-                        <p
-                          className={`text-xl font-bold ${item.bold ? "text-blue-700" : ""}`}
-                        >
-                          {item.value}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
             </>
           )}
         </div>
@@ -710,10 +673,9 @@ const CacheDashboard = () => {
           <div className="border rounded-lg p-5 bg-gray-50">
             <h2 className="font-semibold text-lg">Chapter 4 Evaluation</h2>
             <p className="text-xs text-gray-500 mt-1 max-w-2xl">
-              Collects Response Time, Throughput, and Hit Ratio data for thesis
-              Chapter 4. Mirrors the evaluation methodology of the base paper
-              (Pramudia et al., 2025 — IRCache). Run the store in each mode,
-              then save a snapshot after each session.
+              Collects Response Time, Throughput, and Hit Rate data across test
+              sessions. Run the store in each mode, then save a snapshot after
+              each session.
             </p>
           </div>
 
@@ -790,7 +752,6 @@ const CacheDashboard = () => {
                         "Hit Rate",
                         "Avg RT (ms)",
                         "Throughput (KB/s)",
-                        "Captured",
                         "", // delete column — no header text
                       ].map((h, i) => (
                         <th
@@ -803,51 +764,62 @@ const CacheDashboard = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {snapshots.map((s, i) => (
-                      <tr
-                        key={i}
-                        className={`border-t ${deletingIndex === i ? "opacity-40" : ""}`}
-                      >
-                        <td className="px-4 py-2 font-medium">{s.label}</td>
-                        <td className="px-4 py-2">
-                          <span
-                            className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                              s.mode === "ml_active"
-                                ? "bg-black text-white"
-                                : "bg-gray-100 text-gray-700"
-                            }`}
-                          >
-                            {s.mode === "ml_active"
-                              ? "LightCache ML"
-                              : "Fixed TTL"}
-                          </span>
-                        </td>
-                        <td className="px-4 py-2">
-                          {s.total_requests?.toLocaleString() ?? "—"}
-                        </td>
-                        <td className="px-4 py-2">
-                          <span
-                            className={`font-bold ${s.hit_rate_pct >= 50 ? "text-green-600" : "text-yellow-600"}`}
-                          >
-                            {s.hit_rate_pct ?? "—"}%
-                          </span>
-                        </td>
-                        <td className="px-4 py-2">{s.avg_rt_ms ?? "—"}</td>
-                        <td className="px-4 py-2">{s.throughput_kbs ?? "—"}</td>
-                        <td className="px-4 py-2 text-xs text-gray-400">
-                          {formatDate(s.captured_at)}
-                        </td>
-                        <td className="px-4 py-2">
-                          <button
-                            onClick={() => handleDeleteSnapshot(i)}
-                            disabled={deletingIndex !== null}
-                            className="text-xs text-red-400 hover:text-red-600 hover:underline disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
-                          >
-                            {deletingIndex === i ? "Deleting…" : "Delete"}
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                    {[...snapshots]
+                      .sort((a, b) =>
+                        (a.label ?? "").localeCompare(
+                          b.label ?? "",
+                          undefined,
+                          { numeric: true },
+                        ),
+                      )
+                      .map((s, i) => (
+                        <tr
+                          key={i}
+                          className={`border-t ${deletingIndex === snapshots.indexOf(s) ? "opacity-40" : ""}`}
+                        >
+                          <td className="px-4 py-2 font-medium">{s.label}</td>
+                          <td className="px-4 py-2">
+                            <span
+                              className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                                s.mode === "ml_active"
+                                  ? "bg-black text-white"
+                                  : "bg-gray-100 text-gray-700"
+                              }`}
+                            >
+                              {s.mode === "ml_active"
+                                ? "LightCache ML"
+                                : "Fixed TTL"}
+                            </span>
+                          </td>
+                          <td className="px-4 py-2">
+                            {s.total_requests?.toLocaleString() ?? "—"}
+                          </td>
+                          <td className="px-4 py-2">
+                            <span
+                              className={`font-bold ${s.hit_rate_pct >= 50 ? "text-green-600" : "text-yellow-600"}`}
+                            >
+                              {s.hit_rate_pct ?? "—"}%
+                            </span>
+                          </td>
+                          <td className="px-4 py-2">{s.avg_rt_ms ?? "—"}</td>
+                          <td className="px-4 py-2">
+                            {s.throughput_kbs ?? "—"}
+                          </td>
+                          <td className="px-4 py-2">
+                            <button
+                              onClick={() =>
+                                handleDeleteSnapshot(snapshots.indexOf(s))
+                              }
+                              disabled={deletingIndex !== null}
+                              className="text-xs text-red-400 hover:text-red-600 hover:underline disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                            >
+                              {deletingIndex === snapshots.indexOf(s)
+                                ? "Deleting…"
+                                : "Delete"}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
                   </tbody>
                 </table>
               </div>
@@ -862,8 +834,8 @@ const CacheDashboard = () => {
                     Table A — Average Response Time (ms)
                   </h2>
                   <p className="text-xs text-blue-600 mt-1">
-                    Mirrors IRCache Table 3. Base paper avg RT reduction:{" "}
-                    <strong>63.78%</strong> (cache vs no-cache).
+                    Average response time per session: Fixed TTL Redis vs ML
+                    mode.
                   </p>
                 </div>
                 {exportData.table_a?.rows?.length > 0 ? (
@@ -938,8 +910,7 @@ const CacheDashboard = () => {
                     Table B — Average Throughput (KB/s)
                   </h2>
                   <p className="text-xs text-purple-600 mt-1">
-                    Mirrors IRCache Table 4. Base paper avg throughput increase:{" "}
-                    <strong>32.84%</strong> (cache vs no-cache).
+                    Average throughput per session: Fixed TTL Redis vs ML mode.
                   </p>
                 </div>
                 {exportData.table_b?.rows?.length > 0 ? (
