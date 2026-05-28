@@ -671,7 +671,7 @@ const CacheDashboard = () => {
       {activeTab === "evaluation" && (
         <div className="space-y-6">
           <div className="border rounded-lg p-5 bg-gray-50">
-            <h2 className="font-semibold text-lg">Chapter 4 Evaluation</h2>
+            <h2 className="font-semibold text-lg">Evaluation</h2>
             <p className="text-xs text-gray-500 mt-1 max-w-2xl">
               Collects Response Time, Throughput, and Hit Rate data across test
               sessions. Run the store in each mode, then save a snapshot after
@@ -856,32 +856,40 @@ const CacheDashboard = () => {
                         </tr>
                       </thead>
                       <tbody>
-                        {exportData.table_a.rows.map((row, i) => (
-                          <tr key={i} className="border-t">
-                            <td className="px-4 py-2 font-medium">
-                              {row.label}
-                            </td>
-                            <td className="px-4 py-2">
-                              {row.fixed_ttl_rt_ms ?? "—"}
-                            </td>
-                            <td className="px-4 py-2">
-                              {row.lightcache_rt_ms ?? "—"}
-                            </td>
-                            <td className="px-4 py-2">
-                              {row.rt_reduction_pct !== null &&
-                              row.rt_reduction_pct !== undefined ? (
-                                <span
-                                  className={`font-bold ${row.rt_reduction_pct > 0 ? "text-green-600" : "text-red-500"}`}
-                                >
-                                  {row.rt_reduction_pct > 0 ? "+" : ""}
-                                  {row.rt_reduction_pct}%
-                                </span>
-                              ) : (
-                                "—"
-                              )}
-                            </td>
-                          </tr>
-                        ))}
+                        {[...exportData.table_a.rows]
+                          .sort((a, b) =>
+                            (a.label ?? "").localeCompare(
+                              b.label ?? "",
+                              undefined,
+                              { numeric: true },
+                            ),
+                          )
+                          .map((row, i) => (
+                            <tr key={i} className="border-t">
+                              <td className="px-4 py-2 font-medium">
+                                {row.label}
+                              </td>
+                              <td className="px-4 py-2">
+                                {row.fixed_ttl_rt_ms ?? "—"}
+                              </td>
+                              <td className="px-4 py-2">
+                                {row.lightcache_rt_ms ?? "—"}
+                              </td>
+                              <td className="px-4 py-2">
+                                {row.rt_reduction_pct !== null &&
+                                row.rt_reduction_pct !== undefined ? (
+                                  <span
+                                    className={`font-bold ${row.rt_reduction_pct > 0 ? "text-green-600" : "text-red-500"}`}
+                                  >
+                                    {row.rt_reduction_pct > 0 ? "+" : ""}
+                                    {row.rt_reduction_pct}%
+                                  </span>
+                                ) : (
+                                  "—"
+                                )}
+                              </td>
+                            </tr>
+                          ))}
                         {exportData.table_a.avg_rt_reduction_pct !==
                           undefined && (
                           <tr className="border-t bg-gray-50 font-semibold">
@@ -931,32 +939,40 @@ const CacheDashboard = () => {
                         </tr>
                       </thead>
                       <tbody>
-                        {exportData.table_b.rows.map((row, i) => (
-                          <tr key={i} className="border-t">
-                            <td className="px-4 py-2 font-medium">
-                              {row.label}
-                            </td>
-                            <td className="px-4 py-2">
-                              {row.fixed_ttl_th_kbs ?? "—"}
-                            </td>
-                            <td className="px-4 py-2">
-                              {row.lightcache_th_kbs ?? "—"}
-                            </td>
-                            <td className="px-4 py-2">
-                              {row.th_increase_pct !== null &&
-                              row.th_increase_pct !== undefined ? (
-                                <span
-                                  className={`font-bold ${row.th_increase_pct > 0 ? "text-green-600" : "text-red-500"}`}
-                                >
-                                  {row.th_increase_pct > 0 ? "+" : ""}
-                                  {row.th_increase_pct}%
-                                </span>
-                              ) : (
-                                "—"
-                              )}
-                            </td>
-                          </tr>
-                        ))}
+                        {[...exportData.table_b.rows]
+                          .sort((a, b) =>
+                            (a.label ?? "").localeCompare(
+                              b.label ?? "",
+                              undefined,
+                              { numeric: true },
+                            ),
+                          )
+                          .map((row, i) => (
+                            <tr key={i} className="border-t">
+                              <td className="px-4 py-2 font-medium">
+                                {row.label}
+                              </td>
+                              <td className="px-4 py-2">
+                                {row.fixed_ttl_th_kbs ?? "—"}
+                              </td>
+                              <td className="px-4 py-2">
+                                {row.lightcache_th_kbs ?? "—"}
+                              </td>
+                              <td className="px-4 py-2">
+                                {row.th_increase_pct !== null &&
+                                row.th_increase_pct !== undefined ? (
+                                  <span
+                                    className={`font-bold ${row.th_increase_pct > 0 ? "text-green-600" : "text-red-500"}`}
+                                  >
+                                    {row.th_increase_pct > 0 ? "+" : ""}
+                                    {row.th_increase_pct}%
+                                  </span>
+                                ) : (
+                                  "—"
+                                )}
+                              </td>
+                            </tr>
+                          ))}
                         {exportData.table_b.avg_th_increase_pct !==
                           undefined && (
                           <tr className="border-t bg-gray-50 font-semibold">
